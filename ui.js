@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v8';
+const APP_VERSION = 'v9';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -16,6 +16,7 @@ let LEAVE_DAYS = 1;    // 追加フォームの日数
 let LEAVE_DATE = null; // 追加フォームの取得日 (yyyy-mm-dd)
 let SORT = 'urgent';   // 一覧の並び順
 let LEAVE_MODE = 'single'; // 記録タブ: 'single'=1日ずつ / 'bulk'=月ごとにまとめて
+let WORK_YEAR = null;      // 出勤タブで表示中の年
 
 /* ---------- 保存 / 読み込み ---------- */
 function loadData() {
@@ -788,51 +789,103 @@ function renderWork() {
   const emp = currentEmp();
   const box = $('#p-work');
   if (!emp) { box.innerHTML = `<div class="card"><div class="empty">先に「ホーム」タブから従業員を登録してください</div></div>`; return; }
-  const now = today();
-  const hire = parseYmd(emp.hireDate);
-  const r = simulate(emp, now);
 
-  let html = `<div class="note info">${ICON.info}<div><div class="t">付与日数はここの入力から自動計算されます</div>
-    <div class="d">月ごとの出勤日数（実際に働いた日数）を入れてください。付与日の直前12ヶ月分（初回は6ヶ月×2）から「1年間の所定労働日数」を求め、比例付与表で日数を判定します。</div></div></div>`;
+  const now = today();
+  const curY = now.getFullYear(), curM = now.getMonth() + 1;
+  const hireY = parseYmd(emp.hireDate).getFullYear();
+  const dataYears = Object.keys(emp.workdays || {}).map((k) => Number(k.slice(0, 4)));
+  const maxY = Math.max(curY + 2, hireY, ...(dataYears.length ? dataYears : [0]));
 
   const years = [];
-  const last = Math.max(now.getFullYear(), ...Object.keys(emp.workdays || {}).map((k) => Number(k.slice(0, 4))), hire.getFullYear());
-  for (let y = hire.getFullYear(); y <= last; y++) years.push(y);
+  for (let y = maxY; y >= hireY; y--) years.push(y);
+  if (WORK_YEAR == null || !years.includes(WORK_YEAR)) WORK_YEAR = Math.min(curY, maxY);
 
-  for (const y of years.slice().reverse()) {
+  const stat = (y) => {
     let sum = 0, cnt = 0;
     for (let m = 1; m <= 12; m++) {
       const v = emp.workdays[`${y}-${pad2(m)}`];
       if (typeof v === 'number') { sum += v; cnt++; }
     }
-    html += `<div class="card"><div class="yhead"><b>${y}年</b>
-      <button class="btn sm" data-act="fillyear" data-y="${y}">全月に一括入力</button>
-      <span class="sub" data-wsum="${y}">${cnt ? `${cnt}ヶ月入力 / 計 <b class="num">${sum}</b>日` : '未入力'}</span></div>
-      <div class="mg">`;
-    for (let m = 1; m <= 12; m++) {
-      const key = `${y}-${pad2(m)}`;
-      const v = emp.workdays[key];
-      html += `<div class="m"><span>${m}月</span>
-        <input type="number" inputmode="numeric" min="0" max="31" placeholder="—"
-          value="${typeof v === 'number' ? v : ''}" data-wd="${key}"></div>`;
-    }
-    html += `</div></div>`;
+    return { sum, cnt };
+  };
+
+  /* ---- 説明 ---- */
+  let html = `<div class="note info">${ICON.info}<div><div class="t">付与日数はここの入力から決まります</div>
+    <div class="d">月ごとに実際に出勤した日数を入れてください。付与日の直前12ヶ月（初回は6ヶ月×2）から「1年間の所定労働日数」を出し、比例付与表で日数を判定します。<br>
+    <b>先の年も入力できます。</b>予定の出勤日数を入れておくと、次回の付与日数がより正確に出ます。</div></div></div>`;
+
+  /* ---- 年を選ぶ ---- */
+  html += `<div class="ychips">${years.map((y) => {
+    const st = stat(y);
+    const cls = [y === WORK_YEAR ? 'on' : '', y > curY ? 'fut' : ''].filter(Boolean).join(' ');
+    return `<button data-wyear="${y}" class="${cls}">${y}年${st.cnt ? `<i class="dot"></i>` : ''}</button>`;
+  }).join('')}</div>`;
+
+  /* ---- 選んだ年のグリッド ---- */
+  const st = stat(WORK_YEAR);
+  const avg = st.cnt ? Math.round((st.sum / st.cnt) * 10) / 10 : 0;
+  const prevSt = stat(WORK_YEAR - 1);
+
+  let cells = '';
+  for (let m = 1; m <= 12; m++) {
+    const key = `${WORK_YEAR}-${pad2(m)}`;
+    const v = emp.workdays[key];
+    const future = WORK_YEAR > curY || (WORK_YEAR === curY && m > curM);
+    const isNow = WORK_YEAR === curY && m === curM;
+    cells += `<div class="m ${future ? 'fut' : ''} ${isNow ? 'cur' : ''}"><span>${m}月</span>
+      <input type="number" inputmode="numeric" min="0" max="31" placeholder="—"
+        value="${typeof v === 'number' ? v : ''}" data-wd="${key}" aria-label="${WORK_YEAR}年${m}月の出勤日数"></div>`;
   }
 
-  /* 判定結果 */
+  html += `<div class="card">
+    <div class="yhead"><b>${WORK_YEAR}年</b>
+      ${WORK_YEAR > curY ? '<span class="pill acc">予定</span>' : ''}
+      <span class="sub" data-wsum="${WORK_YEAR}">${st.cnt ? `${st.cnt}ヶ月入力 / 計 <b class="num">${st.sum}</b>日` : '未入力'}</span></div>
+    <div class="mg">${cells}</div>
+    <div class="wsum">
+      <div><span>入力済み</span><b>${st.cnt} / 12ヶ月</b></div>
+      <div><span>年間合計</span><b class="num">${st.sum}日</b></div>
+      <div><span>月平均</span><b class="num">${st.cnt ? avg : '—'}日</b></div>
+    </div>
+    <div class="wbtns">
+      ${prevSt.cnt ? `<button class="btn sm" data-act="copyprev">${WORK_YEAR - 1}年から写す</button>` : ''}
+      <button class="btn sm" data-act="fillyear">全月に同じ数字</button>
+      ${st.cnt ? `<button class="btn sm danger" data-act="clearyear">この年を消す</button>` : ''}
+    </div>
+  </div>`;
+
+  /* ---- 年別サマリー ---- */
+  html += `<h2 class="sec">年ごとの入力状況</h2><div class="card"><div class="tw"><table>
+    <thead><tr><th>年</th><th>入力</th><th>年間合計</th><th>月平均</th><th></th></tr></thead><tbody>`;
+  for (const y of years) {
+    const t = stat(y);
+    const a = t.cnt ? Math.round((t.sum / t.cnt) * 10) / 10 : 0;
+    html += `<tr class="${y === WORK_YEAR ? 'now' : t.cnt ? '' : 'dim'}">
+      <td>${y}年${y > curY ? ' <span class="pill acc">予定</span>' : ''}</td>
+      <td class="num">${t.cnt ? `${t.cnt}/12` : '—'}</td>
+      <td class="num">${t.cnt ? t.sum + '日' : '—'}</td>
+      <td class="num">${t.cnt ? a + '日' : '—'}</td>
+      <td><button class="btn sm" data-wyear="${y}">開く</button></td></tr>`;
+  }
+  html += `</tbody></table></div></div>`;
+
+  /* ---- 付与日数の判定結果 ---- */
+  const r = simulate(emp, now);
   html += `<h2 class="sec">付与日数の判定結果</h2><div class="card"><div class="tw"><table>
-    <thead><tr><th>基準日</th><th>年間労働日数</th><th>区分</th><th>付与</th><th>根拠</th></tr></thead><tbody>`;
-  for (const l of r.lots.slice(0, r.lots.length)) {
+    <thead><tr><th>基準日</th><th>年間日数</th><th>区分</th><th>付与日数</th></tr></thead><tbody>`;
+  for (const l of r.lots) {
     const src = l.annualSource === 'actual' ? '<span class="pill ok">実績</span>'
       : l.annualSource === 'partial' ? '<span class="pill warn">一部推定</span>'
       : '<span class="pill mute">既定値</span>';
-    html += `<tr class="${l.future ? 'dim' : ''}"><td>${fmtJpShort(l.date)}${l.future ? ' <span class="pill acc">予定</span>' : ''}</td>
-      <td class="num">${l.annualDays}日</td><td>${esc(l.categoryShort)}</td>
-      <td class="num"><b>${fmtD(l.granted)}日</b>${l.overridden ? ' <span class="pill acc">手入力</span>' : ''}</td>
-      <td>${src}</td></tr>`;
+    html += `<tr class="${l.future ? 'dim' : ''}">
+      <td>${fmtJpShort(l.date)}<small>${l.future ? '予定' : l.label}</small></td>
+      <td class="num">${l.annualDays}日<small>${src}</small></td>
+      <td>${esc(l.categoryShort)}</td>
+      <td class="num"><b style="font-size:15px">${fmtD(l.granted)}日</b>${l.overridden ? '<small><span class="pill acc">手入力</span></small>' : ''}</td>
+    </tr>`;
   }
   html += `</tbody></table></div>
-    <p class="sub" style="margin-top:10px">出勤日数が未入力の期間は、設定の「既定の週所定労働日数」（現在 週${emp.weeklyDays ?? 5}日）から推定します。</p></div>`;
+    <p class="sub" style="margin-top:10px">「一部推定」「既定値」は出勤日数が足りていない期間です。その年を埋めると精度が上がります（未入力の期間は設定の週${emp.weeklyDays ?? 5}日から推定）。</p></div>`;
 
   html += grantTableHelp();
   box.innerHTML = html;
@@ -1012,7 +1065,7 @@ document.addEventListener('click', (ev) => {
 });
 
 document.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode]');
+  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear]');
   if (!btn) return;
 
   if (btn.dataset.tab) { setTab(btn.dataset.tab); return; }
@@ -1020,6 +1073,12 @@ document.addEventListener('click', (ev) => {
   if (btn.dataset.sort) { SORT = btn.dataset.sort; renderList(); return; }
 
   if (btn.dataset.lmode) { LEAVE_MODE = btn.dataset.lmode; renderLeave(); return; }
+
+  if (btn.dataset.wyear) {
+    WORK_YEAR = Number(btn.dataset.wyear);
+    if (TAB !== 'work') setTab('work'); else { renderWork(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    return;
+  }
 
   if (btn.dataset.open) { CUR = btn.dataset.open; setTab('home'); return; }
 
@@ -1072,13 +1131,35 @@ document.addEventListener('click', (ev) => {
   }
 
   if (act === 'fillyear') {
-    const y = btn.dataset.y;
-    const v = prompt(`${y}年の全12ヶ月に入れる出勤日数を入力してください`, '21');
+    const y = WORK_YEAR;
+    const v = prompt(`${y}年の12ヶ月すべてに入れる出勤日数を入力してください`, '21');
     if (v === null) return;
-    const n = Number(v);
-    if (!(n >= 0 && n <= 31)) { toast('0〜31の数字を入れてください'); return; }
-    for (let m = 1; m <= 12; m++) emp.workdays[`${y}-${pad2(m)}`] = n;
-    saveData(); renderWork(); toast(`${y}年を${n}日で埋めました`); return;
+    const n = numOrNull(v, 31);
+    if (n == null) { toast('0〜31の数字を入れてください'); return; }
+    for (let m = 1; m <= 12; m++) emp.workdays[`${y}-${pad2(m)}`] = Math.round(n);
+    saveData(); renderWork(); toast(`${y}年を${Math.round(n)}日で埋めました`); return;
+  }
+
+  if (act === 'copyprev') {
+    const y = WORK_YEAR, src = y - 1;
+    let filled = 0;
+    for (let m = 1; m <= 12; m++) {
+      const from = emp.workdays[`${src}-${pad2(m)}`];
+      const to = `${y}-${pad2(m)}`;
+      if (typeof from === 'number' && typeof emp.workdays[to] !== 'number') {
+        emp.workdays[to] = from; filled++;
+      }
+    }
+    saveData(); renderWork();
+    toast(filled ? `${src}年から${filled}ヶ月分を写しました（空欄のみ）` : '空いている月がありません');
+    return;
+  }
+
+  if (act === 'clearyear') {
+    const y = WORK_YEAR;
+    if (!confirm(`${y}年の出勤日数をすべて消します。よろしいですか？`)) return;
+    for (let m = 1; m <= 12; m++) delete emp.workdays[`${y}-${pad2(m)}`];
+    saveData(); renderWork(); toast(`${y}年を消しました`); return;
   }
 
   if (act === 'addemp') {

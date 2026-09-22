@@ -6,7 +6,7 @@
    これで、更新したのに古い画面が残り続ける問題が起きにくくなる。
    ファイルを更新したら VERSION の数字を 1 つ上げてください。
    --------------------------------------------------------------------------- */
-const VERSION = 'v8';
+const VERSION = 'v9';
 const CACHE = 'yukyu-' + VERSION;
 
 const SHELL = ['./', './index.html', './core.js', './ui.js', './manifest.json'];
