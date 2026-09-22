@@ -3,6 +3,8 @@
    ========================================================================= */
 'use strict';
 
+const APP_VERSION = 'v6';
+
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
 
@@ -861,7 +863,12 @@ function renderSet() {
     <p><b>年5日の取得義務</b>：10日以上付与された場合、付与日から1年以内に5日取得させる義務があります（労基法 第39条第7項）。</p>
     <p style="color:var(--danger)"><b>ご注意</b>：本アプリは法定の最低基準に基づく目安です。就業規則で法定を上回る付与や、出勤率8割未満による不付与、時間単位年休などは反映していません。最終的な判断は就業規則と実際の労務管理でご確認ください。</p>
   </div></details>
-  <p class="sub" style="text-align:center;margin:18px 0 6px">有給管理 v1.0</p>`;
+  <h2 class="sec">アプリの更新</h2><div class="card">
+    <div class="kv"><span>いま動いているバージョン</span><b>${APP_VERSION}</b></div>
+    <p class="sub" style="margin:12px 0">最新版が出ているか確認して、あれば読み込み直します。</p>
+    <button class="btn full" data-act="update">更新を確認する</button>
+  </div>
+  <p class="sub" style="text-align:center;margin:18px 0 6px">有給管理 ${APP_VERSION}</p>`;
 
   $('#p-set').innerHTML = html;
 }
@@ -1048,6 +1055,24 @@ document.addEventListener('click', (ev) => {
 
   if (act === 'import') { $('#fileIn').click(); return; }
 
+  if (act === 'update') {
+    if (!('serviceWorker' in navigator)) { location.reload(); return; }
+    toast('確認しています…');
+    navigator.serviceWorker.getRegistration()
+      .then((reg) => (reg ? reg.update().then(() => reg) : null))
+      .then((reg) => {
+        if (reg && (reg.waiting || reg.installing)) {
+          (reg.waiting || reg.installing).postMessage('skip-waiting');
+          setTimeout(() => location.reload(), 600);
+        } else {
+          toast('すでに最新です');
+          setTimeout(() => location.reload(), 900);
+        }
+      })
+      .catch(() => location.reload());
+    return;
+  }
+
   if (act === 'reset') {
     if (!confirm('この端末に保存したデータをすべて消します。元に戻せません。よろしいですか？')) return;
     try { localStorage.removeItem(KEY); } catch (e) {}
@@ -1141,8 +1166,25 @@ document.addEventListener('input', (ev) => {
   setTab(TAB);
 
   if ('serviceWorker' in navigator) {
+    // 新しい版に切り替わったら一度だけ読み込み直す
+    const hadController = !!navigator.serviceWorker.controller;
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController || reloaded) return;
+      reloaded = true;
+      location.reload();
+    });
+
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(() => {});
+      navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+        .then((reg) => {
+          reg.update();
+          // アプリに戻ってくるたびに新しい版が無いか確認する
+          document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) reg.update();
+          });
+        })
+        .catch(() => {});
     });
   }
 })();
