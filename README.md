@@ -7,24 +7,45 @@
 
 ## 1. GitHub Pages で公開する手順
 
-1. GitHub で新しいリポジトリを作る（例：`yukyu`）。**Public** にする。
-   - Private のままだと GitHub Pages は有料プランが必要です。
-   - 公開されるのはアプリのコードだけで、有給のデータは含まれません（下の「3. データについて」を参照）。
-2. このフォルダの中身を**そのまま**リポジトリの直下にアップロードする。
-   - ブラウザからなら「Add file」→「Upload files」で、`index.html` `core.js` `ui.js` `manifest.json` `sw.js` と `icons` フォルダをまとめてドラッグ＆ドロップ。
-   - `icons` フォルダの中身（4つの PNG）も忘れずに。
-   - `有給管理データ.json` は `yukyu-app` の外（親フォルダ）に置いてあります。**これはアップロードしないでください。**
-3. リポジトリの **Settings** → 左メニュー **Pages** を開く。
-4. **Source** を `Deploy from a branch`、**Branch** を `main` / `/ (root)` にして **Save**。
-5. 1〜2分待つと、Pages のページに公開URLが出ます。
+**このフォルダ（`yukyu-app`）は、すでに Git リポジトリとして初期化・コミット済みです。**
+GitHub Desktop に登録するだけで公開できます。
+
+### 初回だけ
+
+1. GitHub Desktop を開く（未導入なら https://desktop.github.com ／ GitHubアカウントでサインイン）
+2. メニュー **File → Add local repository...**（Ctrl+O）
+3. **Choose...** で次のフォルダを選ぶ
 
    ```
-   https://<ユーザー名>.github.io/yukyu/
+   C:\Users\lum4g\OneDrive\デスクトップ\Claude\有給管理表\yukyu-app
    ```
 
-> GitHub Pages は https で配信されるので、PWA（ホーム画面追加・オフライン動作）がそのまま使えます。
+4. **Add repository**
+5. 画面中央の **Publish repository** をクリック
+6. ダイアログで
+   - **Name**: `yukyu`（好きな名前でOK）
+   - **Keep this code private のチェックを外す** ← 外さないと GitHub Pages が使えません
+7. **Publish repository**
+8. メニュー **Repository → View on GitHub**（Ctrl+Shift+G）
+9. **Settings → Pages → Source: `Deploy from a branch` / Branch: `main` `/ (root)` → Save**
+10. 1〜2分待ってページを再読み込みすると、公開URLが出ます
 
----
+    ```
+    https://<ユーザー名>.github.io/yukyu/
+    ```
+
+> 公開されるのはアプリのコードだけで、有給のデータは含まれません（下の「3. データについて」を参照）。
+> `有給管理データ.json` は `yukyu-app` の外（親フォルダ）にあるので、コミット対象になりません。
+
+### 2回目以降（ファイルを更新したとき）
+
+1. GitHub Desktop を開くと、左の **Changes** に変更されたファイルが出ています
+2. 左下の **Summary** に何を変えたかを短く入力
+3. **Commit to main**
+4. 上部の **Push origin**
+
+数十秒でサイトに反映されます。スマホ側のキャッシュ対策として、アプリの中身を変えたときは
+`sw.js` の先頭にある `const CACHE = 'yukyu-vN';` の数字を1つ上げてから Push してください。
 
 ## 2. スマホのホーム画面に追加する
 
