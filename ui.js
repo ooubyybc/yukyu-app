@@ -13,6 +13,7 @@ let TAB = 'home';
 let LEAVE_DAYS = 1;    // 追加フォームの日数
 let LEAVE_DATE = null; // 追加フォームの取得日 (yyyy-mm-dd)
 let SORT = 'urgent';   // 一覧の並び順
+let LEAVE_MODE = 'single'; // 記録タブ: 'single'=1日ずつ / 'bulk'=月ごとにまとめて
 
 /* ---------- 保存 / 読み込み ---------- */
 function loadData() {
@@ -82,6 +83,53 @@ const ICON = {
   x: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg>',
 };
 
+
+
+
+/* =========================================================================
+   月まとめ記録のヘルパー
+   「2022年10月に3日取った」のように、日付まで覚えていない過去分を
+   月単位で登録するためのもの。内部ではその月の15日の記録として扱う。
+   ========================================================================= */
+const BULK_DAY = 15; // 月まとめ記録に使う日
+
+function isBulk(l) { return l && l.bulk === true; }
+function bulkId(ym) { return 'bulk-' + ym; }
+function bulkDate(ym) { return ym + '-' + pad2(BULK_DAY); }
+
+/** その月の月まとめ記録 */
+function findBulk(emp, ym) {
+  return (emp.leaves || []).find((l) => isBulk(l) && l.date.slice(0, 7) === ym) || null;
+}
+/** その月の個別（日付指定）記録の合計 */
+function singleSum(emp, ym) {
+  return nd((emp.leaves || [])
+    .filter((l) => !isBulk(l) && l.date.slice(0, 7) === ym)
+    .reduce((s, l) => s + Number(l.days), 0));
+}
+/** 月まとめ記録を設定（0 または空なら削除） */
+function setBulk(emp, ym, days) {
+  emp.leaves = (emp.leaves || []).filter((l) => !(isBulk(l) && l.date.slice(0, 7) === ym));
+  if (days > 0) {
+    emp.leaves.push({ id: bulkId(ym), date: bulkDate(ym), days, note: '月まとめ入力', bulk: true });
+  }
+  emp.leaves.sort((a, b) => a.date.localeCompare(b.date));
+}
+/** 読み込んだデータの正規化（古い形式の移行含む） */
+function normalizeEmployee(e) {
+  e.workdays = e.workdays || {};
+  e.leaves = e.leaves || [];
+  e.grantOverrides = e.grantOverrides || {};
+  e.leaves.forEach((l) => {
+    if (!l.id) l.id = uid();
+    // 旧「Excelから移行（月単位）」の記録は月まとめ扱いにする
+    if (l.bulk === undefined) {
+      l.bulk = String(l.id).startsWith('seed-') || String(l.id).startsWith('bulk-')
+        || /月単位/.test(l.note || '');
+    }
+    if (l.bulk) l.id = bulkId(l.date.slice(0, 7));
+  });
+}
 
 
 /* =========================================================================
@@ -561,9 +609,21 @@ function renderLeave() {
   const box = $('#p-leave');
   if (!emp) { box.innerHTML = `<div class="card"><div class="empty">先に「ホーム」タブから従業員を登録してください</div></div>`; return; }
   const now = today();
-  const r = simulate(emp, now);
 
+  let html = `<div class="seg" style="margin-bottom:14px">
+    <button data-lmode="single" class="${LEAVE_MODE === 'single' ? 'on' : ''}">1日ずつ入力</button>
+    <button data-lmode="bulk" class="${LEAVE_MODE === 'bulk' ? 'on' : ''}">月ごとにまとめて</button>
+  </div>`;
+
+  html += LEAVE_MODE === 'bulk' ? leaveBulkHtml(emp, now) : leaveSingleHtml(emp, now);
+  box.innerHTML = html;
+}
+
+/* ---------- 1日ずつ入力 ---------- */
+function leaveSingleHtml(emp, now) {
+  const r = simulate(emp, now);
   const custom = LEAVE_DAYS !== 0.5 && LEAVE_DAYS !== 1;
+
   let html = `
   <div class="card">
     <h2 class="sec" style="margin-top:0">有給を取得した日を追加</h2>
@@ -589,10 +649,10 @@ function renderLeave() {
 
   /* 付与年度ごとにグループ化 */
   const lots = r.lots.filter((l) => !l.future || l.date <= addMonths(now, 12));
-  const groups = [];
-  for (const l of lots) {
-    groups.push({ from: l.date, to: addMonths(l.date, 12), label: `${fmtJpShort(l.date)} 〜 ${fmtJpShort(new Date(addMonths(l.date, 12).getTime() - 86400000))}`, items: [], lot: l });
-  }
+  const groups = lots.map((l) => ({
+    from: l.date, to: addMonths(l.date, 12), lot: l, items: [],
+    label: `${fmtJpShort(l.date)} 〜 ${fmtJpShort(new Date(addMonths(l.date, 12).getTime() - 86400000))}`,
+  }));
   const other = { label: '付与日より前', items: [], lot: null };
   for (const lv of r.allLeaves) {
     const d = parseYmd(lv.date);
@@ -615,17 +675,52 @@ function renderLeave() {
         const d = parseYmd(lv.date);
         const future = lv.date > ymd(now);
         html += `<div class="li">
-          <div class="g"><div class="d1">${fmtJp(d)}（${'日月火水木金土'[d.getDay()]}）
-            ${future ? '<span class="pill acc">予定</span>' : ''}</div>
-            ${lv.note ? `<div class="d2">${esc(lv.note)}</div>` : ''}</div>
+          <div class="g"><div class="d1">${isBulk(lv)
+            ? `${d.getFullYear()}年${d.getMonth() + 1}月 <span class="pill mute">月まとめ</span>`
+            : `${fmtJp(d)}（${WD[d.getDay()]}）${future ? ' <span class="pill acc">予定</span>' : ''}`}</div>
+            ${lv.note && !isBulk(lv) ? `<div class="d2">${esc(lv.note)}</div>` : ''}</div>
           <div class="amt">${fmtD(lv.days)}日</div>
           <button class="ico-btn" data-act="dellv" data-id="${esc(lv.id)}" aria-label="削除">${ICON.trash}</button>
         </div>`;
       }
     }
   }
-  html += `</div>`;
-  box.innerHTML = html;
+  return html + `</div>`;
+}
+
+/* ---------- 月ごとにまとめて入力 ---------- */
+function leaveBulkHtml(emp, now) {
+  const hire = parseYmd(emp.hireDate);
+  const yearsOf = (emp.leaves || []).map((l) => Number(l.date.slice(0, 4)));
+  const last = Math.max(now.getFullYear(), hire.getFullYear(), ...(yearsOf.length ? yearsOf : [0]));
+
+  let html = `<div class="note info">${ICON.info}<div><div class="t">日付を覚えていない過去分はこちら</div>
+    <div class="d">月ごとに「何日取ったか」を入れるだけで登録できます。日付は各月の${BULK_DAY}日として記録され、残日数や消滅の計算に反映されます。<br>
+    あとから正確な日付が分かったら「1日ずつ入力」で入れ直してください。</div></div></div>`;
+
+  let grand = 0;
+  let body = '';
+  for (let y = last; y >= hire.getFullYear(); y--) {
+    let ySum = 0, cells = '';
+    for (let m = 1; m <= 12; m++) {
+      const ym = `${y}-${pad2(m)}`;
+      const b = findBulk(emp, ym);
+      const sng = singleSum(emp, ym);
+      ySum += (b ? Number(b.days) : 0) + sng;
+      cells += `<div class="m"><span>${m}月</span>
+        <input type="number" inputmode="decimal" step="0.5" min="0" max="31" placeholder="—"
+          value="${b ? fmtD(Number(b.days)) : ''}" data-bulk="${ym}">
+        ${sng > 0 ? `<em class="sng">個別+${fmtD(sng)}</em>` : ''}</div>`;
+    }
+    grand += ySum;
+    body += `<div class="card"><div class="yhead"><b>${y}年</b>
+      <span class="sub">合計 <b class="num">${fmtD(nd(ySum))}</b>日</span></div>
+      <div class="mg">${cells}</div></div>`;
+  }
+
+  html += `<h2 class="sec">月ごとの取得日数（総計 ${fmtD(nd(grand))}日）</h2>` + body;
+  html += `<p class="sub" style="margin-top:-4px">「個別+◯」は、その月に1日ずつ入力した記録がある分です。上の数字とは別に加算されます。</p>`;
+  return html;
 }
 
 /* =========================================================================
@@ -854,12 +949,14 @@ document.addEventListener('click', (ev) => {
 });
 
 document.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open]');
+  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode]');
   if (!btn) return;
 
   if (btn.dataset.tab) { setTab(btn.dataset.tab); return; }
 
   if (btn.dataset.sort) { SORT = btn.dataset.sort; renderList(); return; }
+
+  if (btn.dataset.lmode) { LEAVE_MODE = btn.dataset.lmode; renderLeave(); return; }
 
   if (btn.dataset.open) { CUR = btn.dataset.open; setTab('home'); return; }
 
@@ -972,12 +1069,7 @@ document.addEventListener('change', (ev) => {
         const d = JSON.parse(fr.result);
         if (!d || !Array.isArray(d.employees)) throw new Error('形式が違います');
         DATA = d;
-        DATA.employees.forEach((e) => {
-          e.workdays = e.workdays || {};
-          e.leaves = e.leaves || [];
-          e.grantOverrides = e.grantOverrides || {};
-          e.leaves.forEach((l) => { if (!l.id) l.id = uid(); });
-        });
+        DATA.employees.forEach(normalizeEmployee);
         CUR = DATA.employees[0] ? DATA.employees[0].id : null;
         saveData();
         setTab(DATA.employees.length > 1 ? 'list' : 'home');
@@ -991,6 +1083,12 @@ document.addEventListener('change', (ev) => {
 
   const emp = currentEmp();
   if (!emp) return;
+
+  if (t.dataset.bulk) {
+    const v = t.value.trim();
+    setBulk(emp, t.dataset.bulk, v === '' ? 0 : Math.max(0, Math.min(31, Number(v))));
+    saveData(); renderLeave(); return;
+  }
 
   if (t.dataset.wd) {
     const v = t.value.trim();
@@ -1037,12 +1135,7 @@ document.addEventListener('input', (ev) => {
   const ui = loadUI();
   applyTheme(ui.theme || 'auto');
   DATA = loadData();
-  DATA.employees.forEach((e) => {
-    e.workdays = e.workdays || {};
-    e.leaves = e.leaves || [];
-    e.grantOverrides = e.grantOverrides || {};
-    e.leaves.forEach((l) => { if (!l.id) l.id = uid(); });
-  });
+  DATA.employees.forEach(normalizeEmployee);
   CUR = DATA.employees[0] ? DATA.employees[0].id : null;
   TAB = DATA.employees.length > 1 ? 'list' : 'home';
   setTab(TAB);

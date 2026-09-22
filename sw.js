@@ -1,7 +1,7 @@
 /* 有給管理 - Service Worker
    アプリ本体をキャッシュしてオフラインでも開けるようにします。
    ファイルを更新したら CACHE の数字を 1 つ上げてください。 */
-const CACHE = 'yukyu-v4';
+const CACHE = 'yukyu-v5';
 const ASSETS = [
   './',
   './index.html',
