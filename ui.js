@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v6';
+const APP_VERSION = 'v7';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -133,6 +133,64 @@ function normalizeEmployee(e) {
   });
 }
 
+
+/* ---------- 数値入力の共通処理 ----------
+   矢印（スピナー）でも、キーボードで直接打ち込んでも同じように動くようにする。
+   再描画でフォーカスが飛ばないよう、描画後に同じ欄へ戻す。 */
+function keepFocus(attr, key, fn) {
+  const el0 = document.activeElement;
+  const pos = el0 && el0.selectionStart;
+  fn();
+  const el = document.querySelector(`[${attr}="${CSS.escape(key)}"]`);
+  if (!el) return;
+  el.focus({ preventScroll: true });
+  try { if (pos != null) el.setSelectionRange(pos, pos); } catch (e) {}
+}
+
+/** 数字欄に入った値を 0〜max に丸める。空なら null */
+function numOrNull(v, max) {
+  const t = String(v).trim();
+  if (t === '') return null;
+  const n = Number(t.replace(/[０-９．]/g, (c) => '０１２３４５６７８９．'.indexOf(c) < 10
+    ? String('０１２３４５６７８９'.indexOf(c)) : '.'));
+  if (!isFinite(n) || n < 0) return null;
+  return Math.min(n, max);
+}
+
+/** 月まとめ画面の合計表示だけを更新（打ちながらでも数字が追従する） */
+function refreshBulkTotals() {
+  const emp = currentEmp();
+  if (!emp) return;
+  let grand = 0;
+  $$('#p-leave [data-ysum]').forEach((el) => {
+    const y = el.dataset.ysum;
+    let sum = 0;
+    for (let m = 1; m <= 12; m++) {
+      const ym = `${y}-${pad2(m)}`;
+      const b = findBulk(emp, ym);
+      sum += (b ? Number(b.days) : 0) + singleSum(emp, ym);
+    }
+    grand += sum;
+    el.textContent = fmtD(nd(sum));
+  });
+  const g = $('#p-leave [data-gsum]');
+  if (g) g.textContent = fmtD(nd(grand));
+}
+
+/** 出勤日数画面の年合計だけを更新 */
+function refreshWorkTotals() {
+  const emp = currentEmp();
+  if (!emp) return;
+  $$('#p-work [data-wsum]').forEach((el) => {
+    const y = el.dataset.wsum;
+    let sum = 0, cnt = 0;
+    for (let m = 1; m <= 12; m++) {
+      const v = emp.workdays[`${y}-${pad2(m)}`];
+      if (typeof v === 'number') { sum += v; cnt++; }
+    }
+    el.innerHTML = cnt ? `${cnt}ヶ月入力 / 計 <b class="num">${sum}</b>日` : '未入力';
+  });
+}
 
 /* =========================================================================
    CSV 出力
@@ -716,11 +774,11 @@ function leaveBulkHtml(emp, now) {
     }
     grand += ySum;
     body += `<div class="card"><div class="yhead"><b>${y}年</b>
-      <span class="sub">合計 <b class="num">${fmtD(nd(ySum))}</b>日</span></div>
+      <span class="sub">合計 <b class="num" data-ysum="${y}">${fmtD(nd(ySum))}</b>日</span></div>
       <div class="mg">${cells}</div></div>`;
   }
 
-  html += `<h2 class="sec">月ごとの取得日数（総計 ${fmtD(nd(grand))}日）</h2>` + body;
+  html += `<h2 class="sec">月ごとの取得日数（総計 <span data-gsum>${fmtD(nd(grand))}</span>日）</h2>` + body;
   html += `<p class="sub" style="margin-top:-4px">「個別+◯」は、その月に1日ずつ入力した記録がある分です。上の数字とは別に加算されます。</p>`;
   return html;
 }
@@ -751,7 +809,7 @@ function renderWork() {
     }
     html += `<div class="card"><div class="yhead"><b>${y}年</b>
       <button class="btn sm" data-act="fillyear" data-y="${y}">全月に一括入力</button>
-      <span class="sub">${cnt ? `${cnt}ヶ月入力 / 計 <b class="num">${sum}</b>日` : '未入力'}</span></div>
+      <span class="sub" data-wsum="${y}">${cnt ? `${cnt}ヶ月入力 / 計 <b class="num">${sum}</b>日` : '未入力'}</span></div>
       <div class="mg">`;
     for (let m = 1; m <= 12; m++) {
       const key = `${y}-${pad2(m)}`;
@@ -1110,24 +1168,31 @@ document.addEventListener('change', (ev) => {
   if (!emp) return;
 
   if (t.dataset.bulk) {
-    const v = t.value.trim();
-    setBulk(emp, t.dataset.bulk, v === '' ? 0 : Math.max(0, Math.min(31, Number(v))));
-    saveData(); renderLeave(); return;
+    const n = numOrNull(t.value, 31);
+    setBulk(emp, t.dataset.bulk, n == null ? 0 : n);
+    saveData();
+    keepFocus('data-bulk', t.dataset.bulk, renderLeave);
+    return;
   }
 
   if (t.dataset.wd) {
-    const v = t.value.trim();
-    if (v === '') delete emp.workdays[t.dataset.wd];
-    else emp.workdays[t.dataset.wd] = Math.max(0, Math.min(31, Number(v)));
-    saveData(); renderWork(); return;
+    const n = numOrNull(t.value, 31);
+    if (n == null) delete emp.workdays[t.dataset.wd];
+    else emp.workdays[t.dataset.wd] = Math.round(n);
+    saveData();
+    keepFocus('data-wd', t.dataset.wd, renderWork);
+    return;
   }
 
   if (t.dataset.ov) {
     emp.grantOverrides = emp.grantOverrides || {};
-    const v = t.value.trim();
-    if (v === '') delete emp.grantOverrides[t.dataset.ov];
-    else emp.grantOverrides[t.dataset.ov] = Math.max(0, Number(v));
-    saveData(); renderSet(); toast('付与日数を更新しました'); return;
+    const n = numOrNull(t.value, 99);
+    if (n == null) delete emp.grantOverrides[t.dataset.ov];
+    else emp.grantOverrides[t.dataset.ov] = n;
+    saveData();
+    keepFocus('data-ov', t.dataset.ov, renderSet);
+    toast('付与日数を更新しました');
+    return;
   }
 
   if (t.dataset.ef) {
@@ -1142,15 +1207,36 @@ document.addEventListener('change', (ev) => {
   }
 });
 
-/* 出勤日数の入力は打ちながら保存（再描画はしない） */
+/* 数字は打ちながら保存する（再描画しないのでフォーカスが外れない） */
 document.addEventListener('input', (ev) => {
   const t = ev.target;
-  if (!t.dataset || !t.dataset.wd) return;
-  const emp = currentEmp(); if (!emp) return;
-  const v = t.value.trim();
-  if (v === '') delete emp.workdays[t.dataset.wd];
-  else emp.workdays[t.dataset.wd] = Math.max(0, Math.min(31, Number(v)));
-  saveData();
+  if (!t.dataset) return;
+  const emp = currentEmp();
+  if (!emp) return;
+
+  if (t.dataset.wd) {
+    const n = numOrNull(t.value, 31);
+    if (n == null) delete emp.workdays[t.dataset.wd];
+    else emp.workdays[t.dataset.wd] = Math.round(n);
+    saveData();
+    refreshWorkTotals();
+    return;
+  }
+
+  if (t.dataset.bulk) {
+    const n = numOrNull(t.value, 31);
+    setBulk(emp, t.dataset.bulk, n == null ? 0 : n);
+    saveData();
+    refreshBulkTotals();
+    return;
+  }
+});
+
+/* 数字欄に入ったら中身を選択しておく（打つとそのまま置き換わる） */
+document.addEventListener('focusin', (ev) => {
+  const t = ev.target;
+  if (t.tagName !== 'INPUT' || t.type !== 'number') return;
+  setTimeout(() => { try { t.select(); } catch (e) {} }, 0);
 });
 
 /* =========================================================================

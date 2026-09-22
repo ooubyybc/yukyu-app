@@ -188,7 +188,11 @@ input:focus,select:focus,textarea:focus{outline:2px solid color-mix(in srgb,var(
 .mg{display:grid;grid-template-columns:repeat(4,1fr);gap:8px}
 .mg .m{position:relative}
 .mg .m span{position:absolute;top:5px;left:8px;font-size:10px;color:var(--muted);font-weight:700;pointer-events:none}
-.mg .m input{padding:19px 8px 7px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums}
+.mg .m input{padding:19px 2px 7px 20px;text-align:center;font-weight:700;font-size:17px;font-variant-numeric:tabular-nums}
+/* 矢印（スピナー）は常に出す。直接入力もできる */
+input[type=number]{padding-right:6px}
+input[type=number]::-webkit-inner-spin-button{opacity:1;height:26px}
+@supports (-moz-appearance:textfield){input[type=number]{-moz-appearance:number-input}}
 .mg .m input::placeholder{font-weight:400;color:color-mix(in srgb,var(--muted) 55%,transparent)}
 .mg .m em.sng{position:absolute;bottom:3px;left:0;right:0;text-align:center;font-size:9.5px;font-style:normal;font-weight:700;color:var(--accent);pointer-events:none}
 .mg .m em.sng ~ input,.mg .m:has(em.sng) input{padding-bottom:14px}
