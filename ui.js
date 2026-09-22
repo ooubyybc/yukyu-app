@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v9';
+const APP_VERSION = 'v10';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -794,7 +794,8 @@ function renderWork() {
   const curY = now.getFullYear(), curM = now.getMonth() + 1;
   const hireY = parseYmd(emp.hireDate).getFullYear();
   const dataYears = Object.keys(emp.workdays || {}).map((k) => Number(k.slice(0, 4)));
-  const maxY = Math.max(curY + 2, hireY, ...(dataYears.length ? dataYears : [0]));
+  const extra = Math.max(0, Number(loadUI().workExtraYears) || 0);
+  const maxY = Math.max(curY + 5 + extra, hireY, ...(dataYears.length ? dataYears : [0]));
 
   const years = [];
   for (let y = maxY; y >= hireY; y--) years.push(y);
@@ -815,11 +816,14 @@ function renderWork() {
     <b>先の年も入力できます。</b>予定の出勤日数を入れておくと、次回の付与日数がより正確に出ます。</div></div></div>`;
 
   /* ---- 年を選ぶ ---- */
-  html += `<div class="ychips">${years.map((y) => {
-    const st = stat(y);
-    const cls = [y === WORK_YEAR ? 'on' : '', y > curY ? 'fut' : ''].filter(Boolean).join(' ');
-    return `<button data-wyear="${y}" class="${cls}">${y}年${st.cnt ? `<i class="dot"></i>` : ''}</button>`;
-  }).join('')}</div>`;
+  html += `<div class="ychips">
+    <button data-act="moreyears" class="add" title="さらに先の年を追加">＋ 年を追加</button>
+    ${years.map((y) => {
+      const st = stat(y);
+      const cls = [y === WORK_YEAR ? 'on' : '', y > curY ? 'fut' : ''].filter(Boolean).join(' ');
+      return `<button data-wyear="${y}" class="${cls}">${y}年${st.cnt ? `<i class="dot"></i>` : ''}</button>`;
+    }).join('')}
+  </div>`;
 
   /* ---- 選んだ年のグリッド ---- */
   const st = stat(WORK_YEAR);
@@ -855,9 +859,10 @@ function renderWork() {
   </div>`;
 
   /* ---- 年別サマリー ---- */
+  const listYears = years.filter((y) => stat(y).cnt || y === WORK_YEAR || y === curY);
   html += `<h2 class="sec">年ごとの入力状況</h2><div class="card"><div class="tw"><table>
     <thead><tr><th>年</th><th>入力</th><th>年間合計</th><th>月平均</th><th></th></tr></thead><tbody>`;
-  for (const y of years) {
+  for (const y of listYears) {
     const t = stat(y);
     const a = t.cnt ? Math.round((t.sum / t.cnt) * 10) / 10 : 0;
     html += `<tr class="${y === WORK_YEAR ? 'now' : t.cnt ? '' : 'dim'}">
@@ -867,7 +872,8 @@ function renderWork() {
       <td class="num">${t.cnt ? a + '日' : '—'}</td>
       <td><button class="btn sm" data-wyear="${y}">開く</button></td></tr>`;
   }
-  html += `</tbody></table></div></div>`;
+  html += `</tbody></table></div>
+    <p class="sub" style="margin-top:10px">入力のある年と今年だけを表示しています。ほかの年は上のチップから開いてください。</p></div>`;
 
   /* ---- 付与日数の判定結果 ---- */
   const r = simulate(emp, now);
@@ -1138,6 +1144,15 @@ document.addEventListener('click', (ev) => {
     if (n == null) { toast('0〜31の数字を入れてください'); return; }
     for (let m = 1; m <= 12; m++) emp.workdays[`${y}-${pad2(m)}`] = Math.round(n);
     saveData(); renderWork(); toast(`${y}年を${Math.round(n)}日で埋めました`); return;
+  }
+
+  if (act === 'moreyears') {
+    const ui = loadUI();
+    ui.workExtraYears = Math.min(30, (Number(ui.workExtraYears) || 0) + 5);
+    saveUI(ui);
+    renderWork();
+    toast(`${today().getFullYear() + 5 + ui.workExtraYears}年まで入力できます`);
+    return;
   }
 
   if (act === 'copyprev') {

@@ -77,7 +77,7 @@ function grantDaysFor(annualDays, serviceIndex) {
 /* ---------- 付与日スケジュール ---------- */
 function buildSchedule(hireDate, horizon) {
   const out = [];
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 80; i++) {
     const date = addMonths(hireDate, 6 + 12 * i);
     if (date > horizon) break;
     out.push({ index: i, date, months: 6 + 12 * i });
@@ -113,7 +113,16 @@ function estimateAnnualDays(emp, grant) {
 /** ロットを生成（毎回まっさらな状態で） */
 function buildLots(emp, asOf) {
   const hire = parseYmd(emp.hireDate);
-  const horizon = addMonths(asOf, 24); // 2年先の付与まで予測表示
+  // 通常は2年先まで。出勤日数を先の年まで入れている場合はそこまで伸ばす。
+  let horizon = addMonths(asOf, 24);
+  const keys = Object.keys(emp.workdays || {}).sort();
+  if (keys.length) {
+    const [ly, lm] = keys[keys.length - 1].split('-').map(Number);
+    const h2 = addMonths(new Date(ly, lm - 1, 1), 13);
+    if (h2 > horizon) horizon = h2;
+  }
+  const cap = addMonths(asOf, 12 * 30);
+  if (horizon > cap) horizon = cap;
   const schedule = buildSchedule(hire, horizon);
   return schedule.map((g) => {
     const est = estimateAnnualDays(emp, g);
