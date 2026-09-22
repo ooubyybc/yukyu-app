@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v11';
+const APP_VERSION = 'v12';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -1352,12 +1352,23 @@ document.addEventListener('focusout', (ev) => {
   if (freshFocus === ev.target) freshFocus = null;
 });
 
-/* 数字欄から完全に離れたときだけ画面を作り直す（判定結果などの更新用） */
+/** いま何かを入力できる状態か（作り直すとカーソルが消えてしまう相手） */
+function isEditing(el) {
+  if (!el) return false;
+  if (el.isContentEditable) return true;
+  const tag = el.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT';
+}
+
+/* 数字欄から離れたら、表示を作り直して判定結果などを更新する。
+   ただし、利用者がどこかに入力中のときは絶対に作り直さない
+   （作り直すと入力欄が置き換わってカーソルが消えるため）。 */
 document.addEventListener('focusout', (ev) => {
   const kind = numKeyOf(ev.target);
   if (!kind) return;
   setTimeout(() => {
-    if (numKeyOf(document.activeElement)) return; // まだ別の数字欄を触っている
+    if (isEditing(document.activeElement)) return;   // どこかに入力中
+    if (document.querySelector('.dp-ov, .reg-ov')) return; // カレンダー等が開いている
     if (kind === 'wd' && TAB === 'work') renderWork();
     else if (kind === 'bulk' && TAB === 'leave') renderLeave();
     else if (kind === 'ov' && TAB === 'set') renderSet();
