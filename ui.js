@@ -322,13 +322,20 @@ function renderList() {
    ========================================================================= */
 const WD = ['日', '月', '火', '水', '木', '金', '土'];
 
-/** 日付フィールド（ボタン）のHTML */
-function dateField(key, value, extra) {
-  const d = value ? parseYmd(value) : today();
-  return `<button type="button" class="datefield" data-df="${esc(key)}" data-value="${esc(value || '')}" ${extra || ''}>
-    <span>${fmtJp(d)}（${WD[d.getDay()]}）</span>
-    <svg class="cal" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3.5 9.5h17"/></svg>
-  </button>`;
+/**
+ * 日付フィールド。直接入力できる日付欄と、カレンダーを開くボタンの2つを並べる。
+ * 端末によっては日付欄のカレンダーが開かないので、右のボタンからは必ず開く。
+ */
+function dateField(key, value) {
+  const v = value || ymd(today());
+  const d = parseYmd(v);
+  return `<div class="dfrow">
+    <input type="date" id="df-${esc(key)}" data-dfi="${esc(key)}" value="${esc(v)}">
+    <button type="button" class="calbtn" data-df="${esc(key)}" aria-label="カレンダーから選ぶ" title="カレンダーから選ぶ">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="16" rx="3"/><path d="M8 2.5v4M16 2.5v4M3.5 9.5h17"/><path d="M7.6 13h2M7.6 16.6h2M11.6 13h2M11.6 16.6h2M15.6 13h1"/></svg>
+    </button>
+  </div>
+  <div class="dfcap">${fmtJp(d)}（${WD[d.getDay()]}曜日）</div>`;
 }
 
 let dpClose = null;
@@ -796,7 +803,24 @@ function applyTheme(v) {
 /* =========================================================================
    イベント
    ========================================================================= */
-/* ---- 日付フィールド / クイック選択 ---- */
+/* ---- 日付欄への直接入力 ---- */
+document.addEventListener('change', (ev) => {
+  const t = ev.target;
+  if (!t.dataset || !t.dataset.dfi) return;
+  const key = t.dataset.dfi;
+  const v = t.value;
+  if (!v) return;
+
+  if (key === 'lvDate') { LEAVE_DATE = v; renderLeave(); return; }
+
+  if (key.startsWith('hire:')) {
+    const e = DATA.employees.find((x) => x.id === key.slice(5));
+    if (!e) return;
+    e.hireDate = v; saveData(); renderSet(); toast('入社日を更新しました');
+  }
+});
+
+/* ---- カレンダーボタン / クイック選択 ---- */
 document.addEventListener('click', (ev) => {
   const q = ev.target.closest('[data-qd]');
   if (q) {
