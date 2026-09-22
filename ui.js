@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v7';
+const APP_VERSION = 'v8';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -136,15 +136,13 @@ function normalizeEmployee(e) {
 
 /* ---------- 数値入力の共通処理 ----------
    矢印（スピナー）でも、キーボードで直接打ち込んでも同じように動くようにする。
-   再描画でフォーカスが飛ばないよう、描画後に同じ欄へ戻す。 */
-function keepFocus(attr, key, fn) {
-  const el0 = document.activeElement;
-  const pos = el0 && el0.selectionStart;
-  fn();
-  const el = document.querySelector(`[${attr}="${CSS.escape(key)}"]`);
-  if (!el) return;
-  el.focus({ preventScroll: true });
-  try { if (pos != null) el.setSelectionRange(pos, pos); } catch (e) {}
+   入力中は再描画しない。再描画は「欄から完全に離れたあと」だけ行い、
+   こちらからフォーカスを動かすことは一切しない。 */
+const NUMKEYS = ['wd', 'bulk', 'ov'];
+function numKeyOf(el) {
+  if (!el || !el.dataset) return null;
+  for (const k of NUMKEYS) if (el.dataset[k] != null) return k;
+  return null;
 }
 
 /** 数字欄に入った値を 0〜max に丸める。空なら null */
@@ -1170,8 +1168,8 @@ document.addEventListener('change', (ev) => {
   if (t.dataset.bulk) {
     const n = numOrNull(t.value, 31);
     setBulk(emp, t.dataset.bulk, n == null ? 0 : n);
-    saveData();
-    keepFocus('data-bulk', t.dataset.bulk, renderLeave);
+    t.value = n == null ? '' : fmtD(n);
+    saveData(); refreshBulkTotals();
     return;
   }
 
@@ -1179,8 +1177,8 @@ document.addEventListener('change', (ev) => {
     const n = numOrNull(t.value, 31);
     if (n == null) delete emp.workdays[t.dataset.wd];
     else emp.workdays[t.dataset.wd] = Math.round(n);
-    saveData();
-    keepFocus('data-wd', t.dataset.wd, renderWork);
+    t.value = n == null ? '' : String(Math.round(n));
+    saveData(); refreshWorkTotals();
     return;
   }
 
@@ -1189,8 +1187,8 @@ document.addEventListener('change', (ev) => {
     const n = numOrNull(t.value, 99);
     if (n == null) delete emp.grantOverrides[t.dataset.ov];
     else emp.grantOverrides[t.dataset.ov] = n;
+    t.value = n == null ? '' : fmtD(n);
     saveData();
-    keepFocus('data-ov', t.dataset.ov, renderSet);
     toast('付与日数を更新しました');
     return;
   }
@@ -1232,11 +1230,42 @@ document.addEventListener('input', (ev) => {
   }
 });
 
-/* 数字欄に入ったら中身を選択しておく（打つとそのまま置き換わる） */
+/* 数字欄に入った最初の1回だけ中身を選択する。
+   そのまま打てば上書き、もう一度クリックすればカーソルを置ける。 */
+let freshFocus = null;
+const selectAll = (el) => { try { el.select(); } catch (e) {} };
+
 document.addEventListener('focusin', (ev) => {
   const t = ev.target;
   if (t.tagName !== 'INPUT' || t.type !== 'number') return;
-  setTimeout(() => { try { t.select(); } catch (e) {} }, 0);
+  freshFocus = t;
+  // キーボード（Tab）で入ってきた場合はこの時点で選択される
+  setTimeout(() => { if (freshFocus === t && document.activeElement === t) selectAll(t); }, 0);
+});
+
+// クリックの場合はブラウザがカーソルを置いたあとに選択し直す
+document.addEventListener('click', (ev) => {
+  const t = ev.target;
+  if (t.tagName !== 'INPUT' || t.type !== 'number') return;
+  if (freshFocus !== t) return;
+  freshFocus = null;
+  selectAll(t);
+});
+
+document.addEventListener('focusout', (ev) => {
+  if (freshFocus === ev.target) freshFocus = null;
+});
+
+/* 数字欄から完全に離れたときだけ画面を作り直す（判定結果などの更新用） */
+document.addEventListener('focusout', (ev) => {
+  const kind = numKeyOf(ev.target);
+  if (!kind) return;
+  setTimeout(() => {
+    if (numKeyOf(document.activeElement)) return; // まだ別の数字欄を触っている
+    if (kind === 'wd' && TAB === 'work') renderWork();
+    else if (kind === 'bulk' && TAB === 'leave') renderLeave();
+    else if (kind === 'ov' && TAB === 'set') renderSet();
+  }, 150);
 });
 
 /* =========================================================================

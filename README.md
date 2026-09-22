@@ -168,14 +168,14 @@ icons/       アイコン画像 4種
 2. `sw.js` の先頭にある
 
    ```js
-   const VERSION = 'v7';
+   const VERSION = 'v8';
    ```
 
    の数字を 1 つ上げる（`v7`, `v8` …）
 3. `ui.js` の先頭にある
 
    ```js
-   const APP_VERSION = 'v7';
+   const APP_VERSION = 'v8';
    ```
 
    も同じ数字に合わせる（設定タブに表示され、更新できたか確認できます）
