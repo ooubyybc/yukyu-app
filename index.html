@@ -122,7 +122,12 @@ h2.sec:first-child{margin-top:0}
 .bar.on-tint i{background:currentColor}
 
 /* ===== テーブル ===== */
-.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -16px;padding:0 16px}
+.tw{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -16px;padding:0 16px;
+  scrollbar-width:thin;scrollbar-color:var(--border) transparent}
+.tw::-webkit-scrollbar{height:7px}
+.tw::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px}
+.tw::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+.tw::-webkit-scrollbar-track{background:transparent}
 table{border-collapse:collapse;width:100%;font-size:13.5px}
 th,td{text-align:right;padding:9px 7px;white-space:nowrap;border-bottom:1px solid var(--border)}
 th:first-child,td:first-child{text-align:left;padding-left:0}
@@ -202,8 +207,16 @@ input[type=number]::-webkit-inner-spin-button{opacity:1;height:26px}
 
 /* 年を選ぶチップ */
 .ychips{display:flex;gap:7px;overflow-x:auto;-webkit-overflow-scrolling:touch;
-  margin:0 -16px 12px;padding:2px 16px 6px;scrollbar-width:none}
-.ychips::-webkit-scrollbar{display:none}
+  margin:0 -16px 12px;padding:2px 16px 8px;scrollbar-width:thin;
+  scrollbar-color:var(--border) transparent}
+.ychips::-webkit-scrollbar{height:7px}
+.ychips::-webkit-scrollbar-thumb{background:var(--border);border-radius:99px}
+.ychips::-webkit-scrollbar-thumb:hover{background:var(--muted)}
+.ychips::-webkit-scrollbar-track{background:transparent}
+/* マウス操作の画面では折り返して全部見せる（横スクロール不要） */
+@media (hover:hover) and (pointer:fine){
+  .ychips{flex-wrap:wrap;overflow-x:visible;margin:0 0 12px;padding:0}
+}
 .ychips button{flex:none;padding:9px 15px;border-radius:99px;border:1px solid var(--border);
   background:var(--surface);color:var(--muted);font-family:inherit;font-weight:700;font-size:14px;
   cursor:pointer;display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums}

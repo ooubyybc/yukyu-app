@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v10';
+const APP_VERSION = 'v11';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -1363,6 +1363,17 @@ document.addEventListener('focusout', (ev) => {
     else if (kind === 'ov' && TAB === 'set') renderSet();
   }, 150);
 });
+
+/* 横に並んだものの上でマウスホイールを回したら横に動かす（PC向け） */
+document.addEventListener('wheel', (ev) => {
+  const box = ev.target.closest && ev.target.closest('.ychips, .tw');
+  if (!box) return;
+  if (box.scrollWidth <= box.clientWidth + 2) return;          // はみ出していない
+  if (Math.abs(ev.deltaY) <= Math.abs(ev.deltaX)) return;      // すでに横操作
+  const before = box.scrollLeft;
+  box.scrollLeft += ev.deltaY;
+  if (box.scrollLeft !== before) ev.preventDefault();
+}, { passive: false });
 
 /* =========================================================================
    起動
