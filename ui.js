@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v12';
+const APP_VERSION = 'v13';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -56,6 +56,25 @@ function toast(msg) {
   t.classList.add('on');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('on'), 2200);
+}
+
+/** 新しい版が用意できたときの案内（自動では読み込み直さない） */
+let updateBarShown = false;
+function showUpdateBar() {
+  if (updateBarShown) return;
+  updateBarShown = true;
+  const bar = document.createElement('div');
+  bar.className = 'updbar';
+  bar.innerHTML = `<span>新しい版があります</span>
+    <button class="btn sm primary" data-upd="now">更新する</button>
+    <button class="ico-btn" data-upd="later" aria-label="閉じる">✕</button>`;
+  bar.addEventListener('click', (e) => {
+    const b = e.target.closest('[data-upd]');
+    if (!b) return;
+    if (b.dataset.upd === 'now') location.reload();
+    else { bar.remove(); updateBarShown = false; }
+  });
+  document.body.appendChild(bar);
 }
 
 function currentEmp() {
@@ -916,6 +935,7 @@ function renderSet() {
   const emp = currentEmp();
   let html = `<h2 class="sec" style="margin-top:0">従業員</h2><div class="card">`;
   for (const e of DATA.employees) {
+    const defLots = simulate(e, today()).lots.filter((l) => l.annualSource === 'default' && l.granted > 0);
     html += `<div class="emp-card" data-emp="${esc(e.id)}">
       <div class="top"><b>${esc(e.name || '(名称未設定)')}</b>
         ${e.id === CUR ? '<span class="pill acc">表示中</span>' : ''}
@@ -926,10 +946,22 @@ function renderSet() {
       </div>
       <div class="row">
         <div><label class="fl">入社日</label>${dateField('hire:' + e.id, e.hireDate)}</div>
-        <div><label class="fl">既定の週所定労働日数</label>
+        <div><label class="fl">出勤日数が未入力のときの目安</label>
           <select class="inp" data-ef="weeklyDays" data-id="${esc(e.id)}">
-            ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${Number(e.weeklyDays) === n ? 'selected' : ''}>週${n}日</option>`).join('')}
+            ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${Number(e.weeklyDays) === n ? 'selected' : ''}>週${n}日くらい</option>`).join('')}
           </select></div>
+      </div>
+      <div class="hintbox">
+        付与日数は <b>「出勤」タブに入れた実際の出勤日数</b> から自動で決まります。
+        上の目安が使われるのは、出勤日数がまだ入っていない期間だけです。
+        ${defLots.length
+          ? `<div class="hintwarn">${ICON.alert}<div>
+               <b>${defLots.length}回分の付与</b>が、実績ではなく目安で計算されています
+               （${defLots.slice(0, 3).map((l) => fmtJpShort(l.date)).join('、')}${defLots.length > 3 ? ' ほか' : ''}）。<br>
+               正確にするには、その前1年分の出勤日数を入れてください。
+             </div></div>
+             <button class="btn sm full" data-opendays="${esc(e.id)}" style="margin-top:9px">出勤日数を入れる</button>`
+          : `<div class="hintok">${ICON.check}<div>すべての付与が実績から計算されています。</div></div>`}
       </div>
     </div>`;
   }
@@ -939,7 +971,7 @@ function renderSet() {
   if (emp) {
     const r = simulate(emp, today());
     html += `<h2 class="sec">付与日数の手動調整（${esc(emp.name)}）</h2><div class="card">
-      <p class="sub" style="margin-bottom:12px">自動計算より多く付与する規定がある場合などに上書きできます。空欄にすると自動計算に戻ります。</p>`;
+      <p class="sub" style="margin-bottom:12px">通常は出勤日数から自動で決まります。就業規則で法定を上回る日数を付与している場合など、その回だけ日数を上書きしたいときに使ってください。空欄にすると自動計算に戻ります。</p>`;
     for (const l of r.lots) {
       html += `<div class="li"><div class="g"><div class="d1">${fmtJpShort(l.date)}　${l.label}</div>
         <div class="d2">自動計算 ${fmtD(l.autoDays)}日${l.future ? '（予定）' : ''}</div></div>
@@ -1071,7 +1103,7 @@ document.addEventListener('click', (ev) => {
 });
 
 document.addEventListener('click', (ev) => {
-  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear]');
+  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear],[data-opendays]');
   if (!btn) return;
 
   if (btn.dataset.tab) { setTab(btn.dataset.tab); return; }
@@ -1079,6 +1111,13 @@ document.addEventListener('click', (ev) => {
   if (btn.dataset.sort) { SORT = btn.dataset.sort; renderList(); return; }
 
   if (btn.dataset.lmode) { LEAVE_MODE = btn.dataset.lmode; renderLeave(); return; }
+
+  if (btn.dataset.opendays) {
+    CUR = btn.dataset.opendays;
+    WORK_YEAR = null;
+    setTab('work');
+    return;
+  }
 
   if (btn.dataset.wyear) {
     WORK_YEAR = Number(btn.dataset.wyear);
@@ -1399,20 +1438,22 @@ document.addEventListener('wheel', (ev) => {
   setTab(TAB);
 
   if ('serviceWorker' in navigator) {
-    // 新しい版に切り替わったら一度だけ読み込み直す
-    const hadController = !!navigator.serviceWorker.controller;
-    let reloaded = false;
-    navigator.serviceWorker.addEventListener('controllerchange', () => {
-      if (!hadController || reloaded) return;
-      reloaded = true;
-      location.reload();
-    });
+    // 自動で読み込み直すことはしない（入力中に画面が消えるため）。
+    // 新しい版が用意できたら、画面の下に案内だけ出す。
+    navigator.serviceWorker.addEventListener('controllerchange', showUpdateBar);
 
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
         .then((reg) => {
           reg.update();
-          // アプリに戻ってくるたびに新しい版が無いか確認する
+          reg.addEventListener('updatefound', () => {
+            const w = reg.installing;
+            if (!w) return;
+            w.addEventListener('statechange', () => {
+              if (w.state === 'installed' && navigator.serviceWorker.controller) showUpdateBar();
+            });
+          });
+          // アプリに戻ってきたときに新しい版が無いか確認する
           document.addEventListener('visibilitychange', () => {
             if (!document.hidden) reg.update();
           });

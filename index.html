@@ -427,9 +427,26 @@ details.help .body table{font-size:12px}
   opacity:0;pointer-events:none;transition:.22s;z-index:50;box-shadow:var(--shadow);max-width:90vw;text-align:center
 }
 .toast.on{opacity:1;transform:translateX(-50%)}
+.updbar{
+  position:fixed;left:50%;transform:translateX(-50%);
+  bottom:calc(env(safe-area-inset-bottom,0px) + 78px);z-index:55;
+  display:flex;align-items:center;gap:10px;max-width:92vw;
+  background:var(--surface);border:1px solid var(--accent);border-radius:14px;
+  padding:10px 12px;box-shadow:var(--shadow);font-size:14px;font-weight:700;
+}
+.updbar .ico-btn{font-size:15px;line-height:1}
 .emp-card{border:1px solid var(--border);border-radius:12px;padding:13px;margin-bottom:10px;background:var(--surface-2)}
 .emp-card .top{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 .emp-card .top b{font-size:15px}
+.hintbox{margin-top:11px;padding-top:11px;border-top:1px solid var(--border);
+  font-size:12.5px;color:var(--muted);line-height:1.65}
+.hintbox b{color:var(--text)}
+.hintwarn,.hintok{display:flex;gap:8px;align-items:flex-start;margin-top:9px;
+  padding:9px 11px;border-radius:10px;font-size:12.5px}
+.hintwarn{background:var(--warn-soft);color:var(--warn)}
+.hintok{background:var(--ok-soft);color:var(--ok)}
+.hintwarn svg,.hintok svg{width:16px;height:16px;flex:none;margin-top:2px}
+.hintwarn b{color:inherit}
 hr.sep{border:none;border-top:1px solid var(--border);margin:16px 0}
 </style>
 </head>
@@ -490,7 +507,7 @@ hr.sep{border:none;border-top:1px solid var(--border);margin:16px 0}
 <input type="file" id="fileIn" accept="application/json,.json" hidden>
 <div class="toast" id="toast"></div>
 
-<script src="core.js"></script>
-<script src="ui.js"></script>
+<script src="core.js?v=13"></script>
+<script src="ui.js?v=13"></script>
 </body>
 </html>
