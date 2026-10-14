@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v13';
+const APP_VERSION = 'v14';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -289,37 +289,36 @@ function openRegister(emps, title) {
       for (const it of r.items) {
         const d = parseYmd(it.date);
         run = nd(run - it.days);
-        body += `<tr><td>${fmtJpShort(d)}<small>${WD[d.getDay()]}曜日</small></td>
+        body += `<tr><td>${fmtJpShort(d)}<small>${WD[d.getDay()]}曜日</small>${it.note ? `<span class="note-inline">${esc(it.note)}</span>` : ''}</td>
           <td class="num">${fmtD(it.days)}</td>
           <td class="num">${fmtD(run)}</td>
-          <td style="text-align:left;white-space:normal">${esc(it.note || '')}</td></tr>`;
+          <td class="note-col" style="text-align:left;white-space:normal">${esc(it.note || '')}</td></tr>`;
       }
       if (!r.items.length) body = `<tr><td colspan="4"><div class="empty" style="padding:14px">取得実績なし</div></td></tr>`;
 
       sheets += `<div class="reg-sheet">
         <h3>年次有給休暇管理簿</h3>
         <p class="law">労働基準法施行規則 第24条の7 ／ 基準日から3年間保存</p>
-        <div class="reg-meta">
-          <div><span>氏名</span><b>${esc(e.name)}</b></div>
-          ${e.empNo ? `<div><span>社員番号</span><b>${esc(e.empNo)}</b></div>` : ''}
-          <div><span>入社年月日</span><b>${fmtJpShort(parseYmd(e.hireDate))}</b></div>
-          <div><span>基準日</span><b>${fmtJpShort(r.from)}</b></div>
-          <div><span>対象期間</span><b style="font-size:12.5px">${fmtJpShort(r.from)}〜${fmtJpShort(new Date(r.to.getTime() - 86400000))}</b></div>
+        <div class="reg-grid">
+          <div><span class="lb">氏名</span><b>${esc(e.name)}</b>${e.empNo ? `<small>社員番号 ${esc(e.empNo)}</small>` : ''}</div>
+          <div><span class="lb">入社年月日</span><b>${fmtJpShort(parseYmd(e.hireDate))}</b></div>
+          <div><span class="lb">基準日</span><b>${fmtJpShort(r.from)}</b></div>
+          <div><span class="lb">対象期間</span><b class="sm"><span class="nw">${fmtJpShort(r.from)}〜</span><span class="nw">${fmtJpShort(new Date(r.to.getTime() - 86400000))}</span></b></div>
         </div>
-        <div class="reg-meta">
-          <div><span>付与日数</span><b>${fmtD(r.granted)} 日</b></div>
-          <div><span>前年繰越</span><b>${fmtD(r.carry)} 日</b></div>
-          <div><span>使用可能日数</span><b>${fmtD(r.total)} 日</b></div>
+        <div class="reg-grid">
+          <div><span class="lb">付与日数</span><b>${fmtD(r.granted)}日</b></div>
+          <div><span class="lb">前年繰越</span><b>${fmtD(r.carry)}日</b></div>
+          <div><span class="lb">使用可能日数</span><b>${fmtD(r.total)}日</b></div>
         </div>
         <div class="tw"><table>
-          <thead><tr><th>取得年月日（時季）</th><th>日数</th><th>残日数</th><th style="text-align:left">備考</th></tr></thead>
+          <thead><tr><th>取得年月日（時季）</th><th>日数</th><th>残日数</th><th class="note-col" style="text-align:left">備考</th></tr></thead>
           <tbody>${body}</tbody>
         </table></div>
-        <div class="tot">
-          <div><span>取得日数 計</span><b>${fmtD(r.taken)} 日</b></div>
-          <div><span>時効消滅</span><b${r.expired > 0 ? ' style="color:var(--danger)"' : ''}>${fmtD(r.expired)} 日</b></div>
-          <div><span>${r.closed ? '期末残日数' : '現在の残日数'}</span><b>${fmtD(r.endRemaining)} 日</b></div>
-          <div><span>年5日取得義務</span><b>${r.required5
+        <div class="reg-grid tot">
+          <div><span class="lb">取得日数 計</span><b>${fmtD(r.taken)}日</b></div>
+          <div><span class="lb">時効消滅</span><b${r.expired > 0 ? ' style="color:var(--danger)"' : ''}>${fmtD(r.expired)}日</b></div>
+          <div><span class="lb">${r.closed ? '期末残日数' : '現在の残日数'}</span><b>${fmtD(r.endRemaining)}日</b></div>
+          <div><span class="lb">年5日取得義務</span><b>${r.required5
             ? `${fmtD(Math.min(r.taken, 5))}/5 ${r.met5 ? '<span class="pill ok">達成</span>' : (r.closed ? '<span class="pill danger">未達</span>' : '<span class="pill warn">進行中</span>')}`
             : '<span class="pill mute">対象外</span>'}</b></div>
         </div>
@@ -394,8 +393,8 @@ function renderList() {
 
   let html = `<div class="sumrow">
     <div class="t"><b>${items.length}</b><span>登録人数</span></div>
-    <div class="t ${soon ? 'alert' : ''}"><b>${soon}</b><span>3ヶ月以内に消滅</span></div>
-    <div class="t ${short5 ? 'warn' : ''}"><b>${short5}</b><span>年5日 未達</span></div>
+    <div class="t ${soon ? 'alert' : ''}"><b>${soon}</b><span>3ヶ月以内に<wbr>消滅</span></div>
+    <div class="t ${short5 ? 'warn' : ''}"><b>${short5}</b><span>年5日<wbr>未達</span></div>
   </div>
 
   <div class="sorter">
@@ -413,17 +412,13 @@ function renderList() {
       </div>
       <div class="lines">
         ${r.nextExpiry
-          ? `<div class="ln ${x.dl <= 30 ? 'danger' : x.dl <= 90 ? 'warn' : ''}">${x.dl <= 90 ? ICON.alert : ICON.clock}
-             ${fmtJpShort(r.nextExpiry.date)}に <b>${fmtD(r.nextExpiry.days)}日</b>消滅（あと${x.dl}日）</div>`
-          : `<div class="ln">${ICON.info} 消滅予定はありません</div>`}
+          ? `<div class="ln ${x.dl <= 30 ? 'danger' : x.dl <= 90 ? 'warn' : ''}">${x.dl <= 90 ? ICON.alert : ICON.clock}<span class="tx">${fmtJpShort(r.nextExpiry.date)}に<b>${fmtD(r.nextExpiry.days)}日</b>消滅<span class="nw">（あと${x.dl}日）</span></span></div>`
+          : `<div class="ln">${ICON.info}<span class="tx">消滅予定はありません</span></div>`}
         ${ob
-          ? `<div class="ln ${ob.shortage <= 0 ? 'ok' : ob.daysLeft <= 90 ? 'danger' : 'warn'}">
-             ${ob.shortage <= 0 ? ICON.check : ICON.alert}
-             年5日義務 <b>${fmtD(ob.taken)}/5</b>${ob.shortage > 0 ? `（あと${fmtD(ob.shortage)}日）` : ''}
-             <span class="mini"><i style="width:${Math.min(100, (ob.taken / 5) * 100).toFixed(0)}%"></i></span></div>`
+          ? `<div class="ln ${ob.shortage <= 0 ? 'ok' : ob.daysLeft <= 90 ? 'danger' : 'warn'}">${ob.shortage <= 0 ? ICON.check : ICON.alert}<span class="tx">年5日義務 <b>${fmtD(ob.taken)}/5</b>${ob.shortage > 0 ? `<span class="nw">（あと${fmtD(ob.shortage)}日）</span>` : ''}</span><span class="mini"><i style="width:${Math.min(100, (ob.taken / 5) * 100).toFixed(0)}%"></i></span></div>`
           : ''}
         ${r.nextGrant
-          ? `<div class="ln">${ICON.gift} 次回付与 ${fmtJpShort(r.nextGrant.date)}　<b>＋${fmtD(r.nextGrant.granted)}日</b></div>`
+          ? `<div class="ln">${ICON.gift}<span class="tx">次回付与 ${fmtJpShort(r.nextGrant.date)}　<b>＋${fmtD(r.nextGrant.granted)}日</b></span></div>`
           : ''}
       </div>
     </button>`;
@@ -617,8 +612,8 @@ function renderHome() {
     const done = ob.shortage <= 0;
     const lv = done ? 'ok' : ob.daysLeft <= 90 ? 'danger' : 'warn';
     html += `<div class="note ${lv}">${done ? ICON.check : ICON.alert}<div style="flex:1">
-      <div class="t">年5日の取得義務：${fmtD(ob.taken)} / 5日${done ? ' 達成' : `（あと${fmtD(ob.shortage)}日）`}</div>
-      <div class="d">対象期間 ${fmtJpShort(ob.from)}〜${fmtJpShort(new Date(ob.to.getTime() - 86400000))}（あと${ob.daysLeft}日）</div>
+      <div class="t">年5日の取得義務：<span class="nw">${fmtD(ob.taken)} / 5日</span>${done ? ' 達成' : `<span class="nw">（あと${fmtD(ob.shortage)}日）</span>`}</div>
+      <div class="d">対象期間 <span class="nw">${fmtJpShort(ob.from)}〜${fmtJpShort(new Date(ob.to.getTime() - 86400000))}</span><span class="nw">（あと${ob.daysLeft}日）</span></div>
       <div class="bar on-tint"><i style="width:${Math.min(100, (ob.taken / 5) * 100).toFixed(0)}%"></i></div>
     </div></div>`;
   }
@@ -657,7 +652,7 @@ function renderHome() {
     for (const l of fut) {
       html += `<div class="li">${ICON.gift.replace('<svg', '<svg style="width:19px;height:19px;flex:none;color:var(--accent)"')}
         <div class="g"><div class="d1">${fmtJp(l.date)}</div>
-        <div class="d2">${l.label}・${esc(l.categoryShort)}／有効期限 ${fmtJpShort(l.expiry)}</div></div>
+        <div class="d2 wrap">${l.label}・${esc(l.categoryShort)}／<span class="nw">有効期限 ${fmtJpShort(l.expiry)}</span></div></div>
         <div class="amt" style="color:var(--accent)">＋${fmtD(l.granted)}日</div></div>`;
     }
     html += `<p class="sub" style="margin-top:10px">※ 直近の出勤日数から推定した見込みです。実績が入ると自動で更新されます。</p></div>`;
@@ -747,8 +742,8 @@ function leaveSingleHtml(emp, now) {
     for (const g of shown) {
       const sum = nd(g.items.reduce((s, l) => s + l.days, 0));
       const ob = g.lot && g.lot.granted >= 10;
-      html += `<div class="yr"><span>${esc(g.label)}${g.lot ? `（${g.lot.label}）` : ''}</span>
-        <span>${fmtD(sum)}日 ${ob ? `<span class="pill ${sum >= 5 ? 'ok' : 'warn'}">義務 ${fmtD(Math.min(sum, 5))}/5</span>` : ''}</span></div>`;
+      html += `<div class="yr"><span class="yr-l"><span class="nw">${esc(g.label)}</span>${g.lot ? `<span class="nw">（${g.lot.label}）</span>` : ''}</span>
+        <span class="yr-r">${fmtD(sum)}日${ob ? `<span class="pill ${sum >= 5 ? 'ok' : 'warn'}">義務 ${fmtD(Math.min(sum, 5))}/5</span>` : ''}</span></div>`;
       for (const lv of g.items.slice().reverse()) {
         const d = parseYmd(lv.date);
         const future = lv.date > ymd(now);
@@ -910,7 +905,7 @@ function renderWork() {
     </tr>`;
   }
   html += `</tbody></table></div>
-    <p class="sub" style="margin-top:10px">「一部推定」「既定値」は出勤日数が足りていない期間です。その年を埋めると精度が上がります（未入力の期間は設定の週${emp.weeklyDays ?? 5}日から推定）。</p></div>`;
+    <p class="sub" style="margin-top:10px">「一部推定」「既定値」は出勤日数が足りていない期間です。その年を埋めると精度が上がります（未入力の期間は、設定の「出勤日数が未入力のときの目安」＝週${emp.weeklyDays ?? 5}日くらい から推定）。</p></div>`;
 
   html += grantTableHelp();
   box.innerHTML = html;
@@ -944,7 +939,7 @@ function renderSet() {
         <div><label class="fl">氏名</label><input type="text" value="${esc(e.name)}" data-ef="name" data-id="${esc(e.id)}"></div>
         <div><label class="fl">社員番号</label><input type="text" value="${esc(e.empNo || '')}" data-ef="empNo" data-id="${esc(e.id)}" placeholder="任意"></div>
       </div>
-      <div class="row">
+      <div class="row hire-row">
         <div><label class="fl">入社日</label>${dateField('hire:' + e.id, e.hireDate)}</div>
         <div><label class="fl">出勤日数が未入力のときの目安</label>
           <select class="inp" data-ef="weeklyDays" data-id="${esc(e.id)}">
@@ -1440,7 +1435,11 @@ document.addEventListener('wheel', (ev) => {
   if ('serviceWorker' in navigator) {
     // 自動で読み込み直すことはしない（入力中に画面が消えるため）。
     // 新しい版が用意できたら、画面の下に案内だけ出す。
-    navigator.serviceWorker.addEventListener('controllerchange', showUpdateBar);
+    // 初めて開いたときは Service Worker の登録で controllerchange が起きるだけなので案内しない
+    const hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (hadController) showUpdateBar();
+    });
 
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })

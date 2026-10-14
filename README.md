@@ -168,9 +168,9 @@ icons/       アイコン画像 4種
 
 | ファイル | 場所 |
 |---|---|
-| `sw.js` | `const VERSION = 'v13';` |
-| `ui.js` | `const APP_VERSION = 'v13';` |
-| `index.html` | `<script src="core.js?v=13">` と `<script src="ui.js?v=13">` |
+| `sw.js` | `const VERSION = 'v14';` |
+| `ui.js` | `const APP_VERSION = 'v14';` |
+| `index.html` | `<script src="core.js?v=14">` と `<script src="ui.js?v=14">` |
 
 アプリ本体はネットワーク優先で読み込むので、オンラインなら開き直すだけで最新になります。
 新しい版が用意できると画面下に「新しい版があります」と出るので、そこから更新してください
