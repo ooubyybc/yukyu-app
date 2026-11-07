@@ -19,6 +19,12 @@ function parseYmd(s) {
   const [y, m, d] = String(s).split('-').map(Number);
   return new Date(y, m - 1, d);
 }
+/** 'yyyy-mm-dd' 形式の実在する日付か */
+function isYmd(s) {
+  if (typeof s !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+  const d = parseYmd(s);
+  return !isNaN(d) && ymd(d) === s;
+}
 /** 月末を丸めながら nヶ月 加算（例: 8/31 の6ヶ月後 → 2/28） */
 function addMonths(date, n) {
   const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
@@ -88,7 +94,8 @@ function buildSchedule(hireDate, horizon) {
 /**
  * その付与日に適用する「1年間の所定労働日数」を出勤実績から推定。
  * 初回(6ヶ月)は直前6ヶ月の実績を年換算（×2）、2回目以降は直前12ヶ月。
- * 実績が無い月はカウントせず、入力済み月の平均から年換算する。
+ * 実績が無い（空欄の）月はカウントせず、入力済み月の平均から年換算する。
+ * 「0」と入力した月は「出勤0日」として数える（出勤タブの「入力済み」と同じ扱い）。
  */
 function estimateAnnualDays(emp, grant) {
   const span = grant.index === 0 ? 6 : 12;
@@ -97,7 +104,7 @@ function estimateAnnualDays(emp, grant) {
   for (let i = 0; i < span; i++) {
     const key = monthKeyOf(start.getFullYear(), start.getMonth() + i);
     const v = emp.workdays ? emp.workdays[key] : undefined;
-    if (typeof v === 'number' && v > 0) { total += v; covered++; }
+    if (typeof v === 'number' && isFinite(v) && v >= 0) { total += v; covered++; }
   }
   if (covered === 0) {
     const w = typeof emp.weeklyDays === 'number' ? emp.weeklyDays : 5;
@@ -112,6 +119,7 @@ function estimateAnnualDays(emp, grant) {
 
 /** ロットを生成（毎回まっさらな状態で） */
 function buildLots(emp, asOf) {
+  if (!isYmd(emp.hireDate)) return [];
   const hire = parseYmd(emp.hireDate);
   // 通常は2年先まで。出勤日数を先の年まで入れている場合はそこまで伸ばす。
   let horizon = addMonths(asOf, 24);
@@ -151,6 +159,24 @@ function buildLots(emp, asOf) {
   });
 }
 
+/**
+ * 取得記録を計算用にそろえる（不正な記録は除外し、日付順に並べる）。
+ * eff = 計算に使う日付。
+ *   月まとめの記録は「その月の15日」として保存しているが、今月分は15日を待たずに
+ *   入力した時点で取得済みとして扱う（＝今日付けで消化）。来月以降の分は予定のまま。
+ */
+function leavesForCalc(emp, asOf) {
+  const asOfKey = ymd(asOf);
+  const curYm = asOfKey.slice(0, 7);
+  return (emp.leaves || [])
+    .filter((l) => l && isYmd(l.date) && Number(l.days) > 0 && isFinite(Number(l.days)))
+    .map((l) => {
+      const eff = l.bulk === true && l.date > asOfKey && l.date.slice(0, 7) === curYm ? asOfKey : l.date;
+      return { ...l, days: Number(l.days), eff };
+    })
+    .sort((a, b) => a.eff.localeCompare(b.eff) || a.date.localeCompare(b.date));
+}
+
 /** ロットに消化を反映（期限の近い順に消費）。cutoff 時点まで時効処理する。 */
 function applyLeaves(lots, leaves, cutoff) {
   const shortfalls = [];
@@ -163,7 +189,7 @@ function applyLeaves(lots, leaves, cutoff) {
     }
   };
   for (const lv of leaves) {
-    const d = parseYmd(lv.date);
+    const d = parseYmd(lv.eff || lv.date);
     expireUpTo(d);
     let need = lv.days;
     const avail = lots
@@ -176,7 +202,7 @@ function applyLeaves(lots, leaves, cutoff) {
       l.used += take;
       need -= take;
     }
-    if (need > 0.0001) shortfalls.push({ date: lv.date, days: nd(need) });
+    if (need > 0.0001) shortfalls.push({ id: lv.id, date: lv.date, eff: lv.eff || lv.date, bulk: lv.bulk === true, days: nd(need) });
   }
   expireUpTo(cutoff);
   return shortfalls;
@@ -190,12 +216,9 @@ function simulate(emp, asOfDate) {
   const asOf = asOfDate || today();
   const asOfKey = ymd(asOf);
 
-  const allLeaves = (emp.leaves || [])
-    .filter((l) => l && l.date && Number(l.days) > 0)
-    .map((l) => ({ ...l, days: Number(l.days) }))
-    .sort((a, b) => a.date.localeCompare(b.date));
-  const leaves = allLeaves.filter((l) => l.date <= asOfKey);
-  const planned = allLeaves.filter((l) => l.date > asOfKey);
+  const allLeaves = leavesForCalc(emp, asOf);
+  const leaves = allLeaves.filter((l) => l.eff <= asOfKey);
+  const planned = allLeaves.filter((l) => l.eff > asOfKey);
 
   const lots = buildLots(emp, asOf);
   const shortfalls = applyLeaves(lots, leaves, asOf);
@@ -232,7 +255,7 @@ function simulate(emp, asOfDate) {
       const taken = nd(
         leaves
           .filter((lv) => {
-            const d = parseYmd(lv.date);
+            const d = parseYmd(lv.eff);
             return d >= l.date && d < end;
           })
           .reduce((s, lv) => s + lv.days, 0)
@@ -248,13 +271,21 @@ function simulate(emp, asOfDate) {
   const currentObligation = obligations.find((o) => o.current) || null;
 
   // 取得予定（未来日付）を反映した残日数
+  // ＝ いま持っている有給のうち、予定どおり取ったあとに残る日数。
+  //   （予定日までに期限が来る分は、その予定には使えないものとして消化順を決めるが、
+  //     期限切れによる減少そのものはここでは差し引かない）
   let plannedBalance = balance;
+  let plannedShortfalls = [];
   if (planned.length) {
     const lots2 = buildLots(emp, asOf);
-    applyLeaves(lots2, allLeaves, asOf);
-    plannedBalance = nd(
-      lots2.filter((l) => !l.future && l.expiry > asOf).reduce((s, l) => s + l.remaining, 0)
-    );
+    const sf2 = applyLeaves(lots2, allLeaves, asOf);
+    const plannedIds = new Set(planned.map((l) => l.id));
+    plannedShortfalls = sf2.filter((s) => plannedIds.has(s.id));
+    let usedByPlan = 0;
+    lots.forEach((l, i) => {
+      if (!l.future && l.expiry > asOf) usedByPlan += lots2[i].used - l.used;
+    });
+    plannedBalance = nd(Math.max(0, balance - usedByPlan));
   }
 
   return {
@@ -263,7 +294,7 @@ function simulate(emp, asOfDate) {
     totalGranted, totalUsed, totalExpired,
     plannedDays: nd(planned.reduce((s, l) => s + l.days, 0)),
     nextExpiry, nextGrant, obligations, currentObligation,
-    shortfalls,
+    shortfalls, plannedShortfalls,
   };
 }
 
@@ -275,10 +306,7 @@ function simulate(emp, asOfDate) {
 function buildRegister(emp, asOfDate) {
   const asOf = asOfDate || today();
   const lots = buildLots(emp, asOf);
-  const leaves = (emp.leaves || [])
-    .filter((l) => l && l.date && Number(l.days) > 0)
-    .map((l) => ({ ...l, days: Number(l.days) }))
-    .sort((a, b) => a.date.localeCompare(b.date));
+  const leaves = leavesForCalc(emp, asOf);
 
   const rows = [];
   let li = 0;
@@ -312,7 +340,7 @@ function buildRegister(emp, asOfDate) {
 
     while (li < leaves.length) {
       const lv = leaves[li];
-      const d = parseYmd(lv.date);
+      const d = parseYmd(lv.eff);
       if (d >= end || d > asOf) break;
       expireUpTo(d, row);
       let need = lv.days;
@@ -325,7 +353,7 @@ function buildRegister(emp, asOfDate) {
         l.remaining -= t; l.used += t; need -= t;
       }
       row.taken = nd(row.taken + lv.days);
-      row.items.push({ date: lv.date, days: lv.days, note: lv.note || '', short: need > 0.0001 });
+      row.items.push({ date: lv.date, days: lv.days, note: lv.note || '', bulk: lv.bulk === true, short: need > 0.0001 });
       li++;
     }
 
@@ -346,9 +374,10 @@ const DEFAULT_DATA = { version: 1, employees: [] };
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    ymd, parseYmd, addMonths, diffDays, today, fmtJp, fmtJpShort,
+    ymd, parseYmd, isYmd, addMonths, diffDays, today, fmtJp, fmtJpShort,
     serviceLabel, nd, monthKeyOf, pad2,
     GRANT_TABLE, grantDaysFor, tableRowFor,
-    buildSchedule, estimateAnnualDays, simulate, buildRegister, DEFAULT_DATA,
+    buildSchedule, estimateAnnualDays, buildLots, leavesForCalc, applyLeaves,
+    simulate, buildRegister, DEFAULT_DATA,
   };
 }
