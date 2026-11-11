@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v15';
+const APP_VERSION = 'v16';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -18,6 +18,7 @@ let LEAVE_NOTE = '';   // 追加フォームのメモ（再描画しても消え
 let SORT = 'urgent';   // 一覧の並び順
 let LEAVE_MODE = 'single'; // 記録タブ: 'single'=1日ずつ / 'bulk'=月ごとにまとめて
 let WORK_YEAR = null;      // 出勤タブで表示中の年
+let BULK_YEAR = null;      // 記録タブ（月ごとにまとめて）で表示中の年
 
 /* ---------- 保存 / 読み込み ---------- */
 function loadData() {
@@ -324,21 +325,31 @@ function numOrNull(v, max) {
 function refreshBulkTotals() {
   const emp = currentEmp();
   if (!emp) return;
-  let grand = 0;
-  $$('#p-leave [data-ysum]').forEach((el) => {
-    const y = el.dataset.ysum;
-    let sum = 0;
-    for (let m = 1; m <= 12; m++) {
-      const ym = `${y}-${pad2(m)}`;
-      const b = findBulk(emp, ym);
-      sum += (b ? Number(b.days) : 0) + singleSum(emp, ym);
-    }
-    grand += sum;
-    el.textContent = fmtD(nd(sum));
+  $$('#p-leave [data-ysum]').forEach((el) => { el.textContent = fmtD(bulkYearStat(emp, el.dataset.ysum).sum); });
+  $$('#p-leave [data-ytot]').forEach((el) => {
+    const t = bulkYearStat(emp, el.dataset.ytot); el.textContent = t.cnt ? `${fmtD(t.sum)}日` : '—';
+  });
+  $$('#p-leave [data-ycnt]').forEach((el) => {
+    const t = bulkYearStat(emp, el.dataset.ycnt); el.textContent = t.cnt ? `${t.cnt}/12` : '—';
+  });
+  // 年のボタンの「入力あり」の点
+  $$('#p-leave .ychips [data-byear]').forEach((b) => {
+    const has = bulkYearStat(emp, b.dataset.byear).cnt > 0;
+    const dot = b.querySelector('.dot');
+    if (has && !dot) b.insertAdjacentHTML('beforeend', '<i class="dot"></i>');
+    if (!has && dot) dot.remove();
   });
   const g = $('#p-leave [data-gsum]');
-  if (g) g.textContent = fmtD(nd(grand));
+  if (g) g.textContent = fmtD(nd(bulkYears(emp, today()).reduce((s, y) => s + bulkYearStat(emp, y).sum, 0)));
   refreshLive(); // 上部の「使える有給」もその場で更新
+}
+
+/** 年のボタンの列（スマホでは横スクロール）を、選んでいる年が見える位置へ動かす。ページ自体はスクロールしない */
+function showSelectedChip(panel) {
+  const row = panel && panel.querySelector('.ychips');
+  const on = row && row.querySelector('button.on');
+  if (!row || !on || row.scrollWidth <= row.clientWidth + 2) return;
+  row.scrollLeft = Math.max(0, on.offsetLeft - row.offsetLeft - (row.clientWidth - on.offsetWidth) / 2);
 }
 
 /** 出勤日数画面の年合計だけを更新 */
@@ -888,6 +899,7 @@ function renderLeave() {
   </div>`;
   html += LEAVE_MODE === 'bulk' ? leaveBulkHtml(emp, now, r) : leaveSingleHtml(emp, now, r);
   box.innerHTML = html;
+  if (LEAVE_MODE === 'bulk') showSelectedChip(box);
 }
 
 /* ---------- 1日ずつ入力 ---------- */
@@ -980,10 +992,37 @@ function leaveSingleHtml(emp, now, r) {
 }
 
 /* ---------- 月ごとにまとめて入力 ---------- */
+/** その年の月まとめ＋個別記録の合計と、入力のある月の数 */
+function bulkYearStat(emp, y) {
+  let sum = 0, cnt = 0;
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${y}-${pad2(m)}`;
+    const b = findBulk(emp, ym);
+    const v = (b ? Number(b.days) : 0) + singleSum(emp, ym);
+    if (v > 0) { sum += v; cnt++; }
+  }
+  return { sum: nd(sum), cnt };
+}
+/** 月まとめで選べる年（新しい順）。今年から5年先まで＋「年を追加」で増やした分 */
+function bulkYears(emp, now) {
+  const curY = now.getFullYear();
+  const hireY = isYmd(emp.hireDate) ? parseYmd(emp.hireDate).getFullYear() : curY;
+  const dataYears = (emp.leaves || []).filter((l) => l && isYmd(l.date))
+    .map((l) => Number(l.date.slice(0, 4))).filter((y) => y >= 1950 && y <= curY + 50);
+  const extra = Math.max(0, Number(loadUI().bulkExtraYears) || 0);
+  const maxY = Math.max(curY + 5 + extra, hireY, ...dataYears);
+  const minY = Math.min(hireY, ...dataYears);
+  const years = [];
+  for (let y = maxY; y >= minY; y--) years.push(y);
+  return years;
+}
+
 function leaveBulkHtml(emp, now, r) {
+  const curY = now.getFullYear();
   const hire = isYmd(emp.hireDate) ? parseYmd(emp.hireDate) : now;
-  const yearsOf = (emp.leaves || []).filter((l) => isYmd(l.date)).map((l) => Number(l.date.slice(0, 4)));
-  const last = Math.max(now.getFullYear(), hire.getFullYear(), ...(yearsOf.length ? yearsOf : [0]));
+  const years = bulkYears(emp, now);
+  if (BULK_YEAR == null || !years.includes(BULK_YEAR)) BULK_YEAR = years.includes(curY) ? curY : years[0];
+  const Y = BULK_YEAR;
   const curYm = ymd(now).slice(0, 7);
   const firstGrant = r.lots[0] ? r.lots[0].date : null;
   const badMonths = new Set([...r.shortfalls, ...(r.plannedShortfalls || [])]
@@ -993,37 +1032,56 @@ function leaveBulkHtml(emp, now, r) {
     <div class="d">月ごとに「何日取ったか」を入れるだけで登録できます。<b>今月までの分は、入れた時点で残日数から引きます</b>（来月以降の分は「予定」として扱います）。<br>
     正確な日付が分かったら「1日ずつ入力」で入れ直してください。</div></div></div>`;
 
-  let grand = 0;
-  let body = '';
-  for (let y = last; y >= hire.getFullYear(); y--) {
-    let ySum = 0, cells = '';
-    for (let m = 1; m <= 12; m++) {
-      const ym = `${y}-${pad2(m)}`;
-      const b = findBulk(emp, ym);
-      const sng = singleSum(emp, ym);
-      ySum += (b ? Number(b.days) : 0) + sng;
-      const pre = firstGrant && new Date(y, m, 0) < firstGrant; // その月がまるごと最初の付与日より前
-      const beforeHire = new Date(y, m, 0) < hire;              // その月がまるごと入社前
-      const cls = [ym === curYm ? 'cur' : '', ym > curYm ? 'fut' : '', pre ? 'pre' : '', badMonths.has(ym) ? 'bad' : '']
-        .filter(Boolean).join(' ');
-      const tag = sng > 0 ? `<em class="sng">個別+${fmtD(sng)}</em>`
-        : badMonths.has(ym) ? '<em class="bad">不足</em>'
-        : beforeHire ? '<em class="pre">入社前</em>'
-        : pre ? '<em class="pre">付与前</em>'
-        : ym === curYm ? '<em class="sng">今月</em>' : '';
-      cells += `<div class="m ${cls}"><span>${m}月</span>
-        <input type="number" inputmode="decimal" step="0.5" min="0" max="31" placeholder="—"
-          value="${b ? fmtD(Number(b.days)) : ''}" data-bulk="${ym}" aria-label="${y}年${m}月に取った日数"${ym > curYm ? ' title="来月以降の分は予定として扱います"' : ''}>
-        ${tag}</div>`;
-    }
-    grand += ySum;
-    body += `<div class="card"><div class="yhead"><b>${y}年</b>
-      <span class="sub">合計 <b class="num" data-ysum="${y}">${fmtD(nd(ySum))}</b>日</span></div>
-      <div class="mg">${cells}</div></div>`;
-  }
+  /* ---- 年を選ぶ ---- */
+  html += `<div class="ychips">
+    <button data-act="morebulkyears" class="add" title="さらに先の年を追加">＋ 年を追加</button>
+    ${years.map((y) => {
+      const cls = [y === Y ? 'on' : '', y > curY ? 'fut' : ''].filter(Boolean).join(' ');
+      return `<button data-byear="${y}" class="${cls}">${y}年${bulkYearStat(emp, y).cnt ? '<i class="dot"></i>' : ''}</button>`;
+    }).join('')}
+  </div>`;
 
-  html += `<h2 class="sec">月ごとの取得日数（総計 <span class="num" data-gsum>${fmtD(nd(grand))}</span>日）</h2>` + body;
-  html += `<p class="sub" style="margin-top:-2px">「個別+◯」は、その月に1日ずつ入力した記録の分です（上の数字とは別に加算）。「付与前」の月は、まだ有給がない期間のため残日数から引かれません。</p>`;
+  /* ---- 選んだ年のマス ---- */
+  let cells = '';
+  for (let m = 1; m <= 12; m++) {
+    const ym = `${Y}-${pad2(m)}`;
+    const b = findBulk(emp, ym);
+    const sng = singleSum(emp, ym);
+    const pre = firstGrant && new Date(Y, m, 0) < firstGrant; // その月がまるごと最初の付与日より前
+    const beforeHire = new Date(Y, m, 0) < hire;              // その月がまるごと入社前
+    const cls = [ym === curYm ? 'cur' : '', ym > curYm ? 'fut' : '', pre ? 'pre' : '', badMonths.has(ym) ? 'bad' : '']
+      .filter(Boolean).join(' ');
+    const tag = sng > 0 ? `<em class="sng">個別+${fmtD(sng)}</em>`
+      : badMonths.has(ym) ? '<em class="bad">不足</em>'
+      : beforeHire ? '<em class="pre">入社前</em>'
+      : pre ? '<em class="pre">付与前</em>'
+      : ym === curYm ? '<em class="sng">今月</em>' : '';
+    cells += `<div class="m ${cls}"><span>${m}月</span>
+      <input type="number" inputmode="decimal" step="0.5" min="0" max="31" placeholder="—"
+        value="${b ? fmtD(Number(b.days)) : ''}" data-bulk="${ym}" aria-label="${Y}年${m}月に取った日数"${ym > curYm ? ' title="来月以降の分は予定として扱います"' : ''}>
+      ${tag}</div>`;
+  }
+  html += `<div class="card"><div class="yhead"><b>${Y}年</b>${Y > curY ? '<span class="pill acc">予定</span>' : ''}
+      <span class="sub">合計 <b class="num" data-ysum="${Y}">${fmtD(bulkYearStat(emp, Y).sum)}</b>日</span></div>
+      <div class="mg">${cells}</div></div>`;
+  html += `<p class="sub" style="margin:-2px 2px 0">「個別+◯」は、その月に1日ずつ入力した記録の分です（上の数字とは別に加算）。「付与前」の月は、まだ有給がない期間のため残日数から引かれません。</p>`;
+
+  /* ---- 年ごとの一覧 ---- */
+  const stats = new Map(years.map((y) => [y, bulkYearStat(emp, y)]));
+  const grand = nd([...stats.values()].reduce((s, t) => s + t.sum, 0));
+  const listYears = years.filter((y) => stats.get(y).cnt || y === Y || y === curY);
+  html += `<h2 class="sec">年ごとの取得日数（総計 <span class="num" data-gsum>${fmtD(grand)}</span>日）</h2><div class="card"><div class="tw"><table>
+    <thead><tr><th>年</th><th>入力した月</th><th>合計</th><th></th></tr></thead><tbody>`;
+  for (const y of listYears) {
+    const t = stats.get(y);
+    html += `<tr class="${y === Y ? 'now' : t.cnt ? '' : 'dim'}">
+      <td>${y}年${y > curY ? ' <span class="pill acc">予定</span>' : ''}</td>
+      <td class="num" data-ycnt="${y}">${t.cnt ? `${t.cnt}/12` : '—'}</td>
+      <td class="num" data-ytot="${y}">${t.cnt ? `${fmtD(t.sum)}日` : '—'}</td>
+      <td><button class="btn sm" data-byear="${y}">開く</button></td></tr>`;
+  }
+  html += `</tbody></table></div>
+    <p class="sub" style="margin-top:10px">入力のある年と今年だけを表示しています。ほかの年は上の年のボタンから開いてください。</p></div>`;
   return html;
 }
 
@@ -1144,6 +1202,7 @@ function renderWork() {
 
   html += grantTableHelp();
   box.innerHTML = html;
+  showSelectedChip(box);
 }
 
 function grantTableHelp() {
@@ -1472,7 +1531,7 @@ function applyImport(d) {
 }
 
 document.addEventListener('click', async (ev) => {
-  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear],[data-opendays]');
+  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear],[data-byear],[data-opendays]');
   if (!btn) return;
 
   if (btn.dataset.tab) { setTab(btn.dataset.tab); return; }
@@ -1495,6 +1554,14 @@ document.addEventListener('click', async (ev) => {
   if (btn.dataset.wyear) {
     WORK_YEAR = Number(btn.dataset.wyear);
     if (TAB !== 'work') setTab('work'); else { renderWork(); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+    return;
+  }
+
+  if (btn.dataset.byear) {
+    BULK_YEAR = Number(btn.dataset.byear);
+    const fromList = !!btn.closest('table');
+    renderLeave();
+    if (fromList) window.scrollTo({ top: 0, behavior: 'smooth' });
     return;
   }
 
@@ -1540,6 +1607,15 @@ document.addEventListener('click', async (ev) => {
     if (n == null) return;
     for (let m = 1; m <= 12; m++) emp.workdays[`${y}-${pad2(m)}`] = Math.round(n);
     saveData(); renderWork(); toast(`${y}年を${Math.round(n)}日で埋めました`); return;
+  }
+
+  if (act === 'morebulkyears') {
+    const ui = loadUI();
+    ui.bulkExtraYears = Math.min(30, (Number(ui.bulkExtraYears) || 0) + 5);
+    saveUI(ui);
+    renderLeave();
+    toast(`${today().getFullYear() + 5 + ui.bulkExtraYears}年まで入力できます`);
+    return;
   }
 
   if (act === 'moreyears') {

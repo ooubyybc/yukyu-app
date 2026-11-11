@@ -129,6 +129,10 @@ function buildLots(emp, asOf) {
     const h2 = addMonths(new Date(ly, lm - 1, 1), 13);
     if (h2 > horizon) horizon = h2;
   }
+  // 先の年に取得予定（月まとめなど）を入れている場合は、その日まで付与日を出しておく
+  for (const l of emp.leaves || []) {
+    if (l && isYmd(l.date)) { const d = parseYmd(l.date); if (d > horizon) horizon = d; }
+  }
   const cap = addMonths(asOf, 12 * 30);
   if (horizon > cap) horizon = cap;
   const schedule = buildSchedule(hire, horizon);
