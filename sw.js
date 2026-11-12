@@ -6,15 +6,19 @@
    これで、更新したのに古い画面が残り続ける問題が起きにくくなる。
    ファイルを更新したら VERSION の数字を 1 つ上げてください。
    --------------------------------------------------------------------------- */
-const VERSION = 'v16';
+const VERSION = 'v17';
 const CACHE = 'yukyu-' + VERSION;
 
-const SHELL = ['./', './index.html', './core.js', './ui.js', './manifest.json'];
+const SHELL = ['./', './index.html', './holidays.js', './core.js', './io.js', './ui.js',
+  './ui-dash.js', './ui-forms.js', './ui-docs.js', './ui-data.js', './manifest.json'];
 const ICONS = [
   './icons/icon-180.png',
   './icons/icon-192.png',
   './icons/icon-512.png',
   './icons/icon-maskable-512.png',
+  './fonts/jost-latin-300-normal.woff2',
+  './fonts/jost-latin-400-normal.woff2',
+  './fonts/jost-latin-500-normal.woff2',
 ];
 
 self.addEventListener('install', (e) => {

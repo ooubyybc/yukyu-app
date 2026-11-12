@@ -3,7 +3,7 @@
    ========================================================================= */
 'use strict';
 
-const APP_VERSION = 'v16';
+const APP_VERSION = 'v17';
 
 const KEY = 'yukyu-app-v1';
 const KEY_UI = 'yukyu-app-ui';
@@ -19,11 +19,19 @@ let SORT = 'urgent';   // 一覧の並び順
 let LEAVE_MODE = 'single'; // 記録タブ: 'single'=1日ずつ / 'bulk'=月ごとにまとめて
 let WORK_YEAR = null;      // 出勤タブで表示中の年
 let BULK_YEAR = null;      // 記録タブ（月ごとにまとめて）で表示中の年
+let LEAVE_HALF = 'am';     // 半日：'am'=午前 / 'pm'=午後
+let LEAVE_HOURS = 1;       // 時間単位の時間数
+let LEAVE_PLAN = false;    // 計画年休（会社が時季を指定した日）
+let LEAVE_UNIT = 'day';    // 'day' / 'half' / 'hour' / 'custom'
+let LEAVE_Q = '';          // 記録の検索語
+let SEARCH = '';           // ダッシュボードの検索語
+let SHOW_RETIRED = false;  // 退職者も表示
+let CAL_MONTH = null;      // カレンダーで表示中の月（Date の1日）
 
 /* ---------- 保存 / 読み込み ---------- */
 function loadData() {
   try {
-    const raw = localStorage.getItem(KEY);
+    const raw = localStorage.getItem(keyData());
     if (raw) {
       const d = JSON.parse(raw);
       if (d && Array.isArray(d.employees)) return d;
@@ -31,10 +39,23 @@ function loadData() {
   } catch (e) { /* 非対応環境 */ }
   return JSON.parse(JSON.stringify(DEFAULT_DATA));
 }
-function saveData() {
-  try { localStorage.setItem(KEY, JSON.stringify(DATA)); }
-  catch (e) { toast('この環境では保存できません'); }
+/**
+ * 保存。label は操作の履歴に残す名前（省略すると変わった内容から決める）。
+ * 保存のたびに「何が変わったか」を前回の保存と比べて履歴に残す（ui-data.js）。
+ */
+function saveData(label) {
+  try { localStorage.setItem(keyData(), JSON.stringify(DATA)); }
+  catch (e) { toast('この環境では保存できません（空き容量が足りない可能性があります）'); return; }
+  if (typeof afterSave === 'function') afterSave(label);
 }
+/** 会社の設定（未設定なら法定どおり） */
+function settings() {
+  if (!DATA) return normSettings(null);
+  if (!isObj(DATA.settings)) DATA.settings = {};
+  return normSettings(DATA.settings);
+}
+const sim = (e, d) => simulate(e, d || today(), settings());
+const reg = (e, d) => buildRegister(e, d || today(), settings());
 function loadUI() {
   try { return JSON.parse(localStorage.getItem(KEY_UI) || '{}') || {}; }
   catch (e) { return {}; }
@@ -48,7 +69,46 @@ const $ = (s, r) => (r || document).querySelector(s);
 const $$ = (s, r) => Array.from((r || document).querySelectorAll(s));
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) =>
   ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const fmtD = (v) => (Number.isInteger(v) ? String(v) : Number(v).toFixed(1));
+const fmtD = (v) => {
+  const x = Number(v);
+  if (Number.isInteger(x)) return String(x);
+  if (Math.abs(x * 2 - Math.round(x * 2)) < 1e-6) return x.toFixed(1);
+  return String(Math.round(x * 100) / 100);
+};
+/**
+ * 日数を「数字と単位」の組に分ける。半日単位まではそのまま [[13.5,'日']]、
+ * 時間単位の端数があるときは [[13,'日'],[6,'時間']]（1日の時間数は従業員ごと）
+ */
+function dhParts(v, emp) {
+  let x = nd(Number(v) || 0);
+  const neg = x < 0;
+  if (neg) x = -x;
+  const sign = neg ? '-' : '';
+  if (Math.abs(x * 2 - Math.round(x * 2)) < 1e-6) return [[sign + fmtD(Math.round(x * 2) / 2), '日']];
+  const hpd = hpdOf(emp);
+  let d = Math.floor(x + 1e-9);
+  let h = Math.round((x - d) * hpd * 100) / 100;
+  if (h >= hpd) { d += 1; h = 0; }
+  return h > 0 ? [[sign + d, '日'], [fmtD(h), '時間']] : [[sign + d, '日']];
+}
+/**
+ * 日数の表示。半日単位まではそのまま「13.5日」、時間単位の端数があるときは「13日6時間」。
+ * html=true なら数字と単位を分けた HTML（単位は <small>）
+ */
+function dh(v, emp, html) {
+  return dhParts(v, emp).map(([n, u]) => html ? `${n}<small>${u}</small>` : `${n}${u}`).join('');
+}
+/** 数字は <b>、単位は <i> の HTML（残日数の帯・一覧用）。時間の数字には class="h" */
+function dhBI(v, emp) {
+  return dhParts(v, emp).map(([n, u], i) => `<b${i ? ' class="h"' : ''}>${n}</b><i>${u}</i>`).join('');
+}
+/** 記録1件の量の表示（「1日」「午前半休」「2時間」など） */
+function leaveAmount(l, emp) {
+  if (l.unit === 'hour') return `${fmtD(Number(l.hours))}時間`;
+  const d = Number(l.days);
+  if (d === 0.5 && (l.half === 'am' || l.half === 'pm')) return l.half === 'am' ? '午前半休' : '午後半休';
+  return `${fmtD(d)}日`;
+}
 const uid = () => 'x' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
 let toastTimer = null;
@@ -225,8 +285,8 @@ function findBulk(emp, ym) {
 /** その月の個別（日付指定）記録の合計 */
 function singleSum(emp, ym) {
   return nd((emp.leaves || [])
-    .filter((l) => !isBulk(l) && l.date.slice(0, 7) === ym)
-    .reduce((s, l) => s + Number(l.days), 0));
+    .filter((l) => !isBulk(l) && isYmd(l.date) && l.date.slice(0, 7) === ym)
+    .reduce((s, l) => s + leaveDaysOf(emp, l), 0));
 }
 /** 月まとめ記録を設定（0 または空なら削除） */
 function setBulk(emp, ym, days) {
@@ -238,17 +298,53 @@ function setBulk(emp, ym, days) {
 }
 /** 読み込んだデータの正規化（古い形式の移行含む） */
 const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+const STR_FIELDS = { name: 40, empNo: 20, store: 30, dept: 30, empType: 20 };
 function normalizeEmployee(e) {
   if (!isObj(e.workdays)) e.workdays = {};
   if (!Array.isArray(e.leaves)) e.leaves = [];
   if (!isObj(e.grantOverrides)) e.grantOverrides = {};
-  if (e.name == null) e.name = '';
-  e.name = String(e.name);
+  for (const [k, max] of Object.entries(STR_FIELDS)) {
+    if (e[k] == null) { if (k === 'name') e.name = ''; continue; }
+    e[k] = String(e[k]).slice(0, max);
+  }
+  // v17 で増えた項目（無ければ付けない＝古いデータのまま動く）
+  if (e.retireDate != null && !isYmd(e.retireDate)) delete e.retireDate;
+  if (e.basis != null && e.basis !== 'contract' && e.basis !== 'actual') delete e.basis;
+  if (e.contracts != null) {
+    e.contracts = Array.isArray(e.contracts) ? e.contracts.filter((c) => isObj(c) && isYmd(c.from)).map((c) => ({
+      id: c.id || uid(), from: c.from,
+      weekly: Math.min(5, Math.max(1, Math.round(Number(c.weekly)) || 5)),
+      annual: Number(c.annual) > 0 && Number(c.annual) <= 366 ? Math.round(Number(c.annual)) : null,
+      hours30: c.hours30 === true,
+    })) : [];
+  }
+  if (e.absences != null) {
+    e.absences = Array.isArray(e.absences) ? e.absences.filter((a) => isObj(a) && isYmd(a.from) && isYmd(a.to) && a.from <= a.to)
+      .map((a) => ({ id: a.id || uid(), kind: ABSENCE_KINDS[a.kind] ? a.kind : 'other', from: a.from, to: a.to, note: String(a.note || '').slice(0, 60) })) : [];
+  }
+  if (e.schedDays != null && !isObj(e.schedDays)) e.schedDays = {};
+  if (e.over30h != null) e.over30h = e.over30h === true;
+  if (e.hoursPerDay != null && !(Number(e.hoursPerDay) >= 1 && Number(e.hoursPerDay) <= 24)) delete e.hoursPerDay;
+  if (e.workPattern != null) {
+    const wp = isObj(e.workPattern) ? e.workPattern : {};
+    e.workPattern = {
+      dows: Array.isArray(wp.dows) ? [...new Set(wp.dows.map(Number).filter((n) => n >= 0 && n <= 6))].sort() : [1, 2, 3, 4, 5],
+      holidaysOff: wp.holidaysOff !== false,
+    };
+  }
+  if (e.opening != null && !(isObj(e.opening) && isYmd(e.opening.date))) delete e.opening;
   const ids = new Set();
   const bulkOf = {};
   e.leaves = e.leaves.filter((l) => {
     if (!isObj(l)) return false;                 // null などの壊れた記録
     if (!l.id || ids.has(String(l.id))) l.id = uid(); // ID の重複は削除時に巻き込むので振り直す
+    if (l.unit === 'hour') {
+      if (!(Number(l.hours) > 0)) return false;
+      l.hours = Number(l.hours);
+      delete l.days; delete l.half; l.bulk = false;
+    } else if (l.unit != null) delete l.unit;
+    if (l.half != null && l.half !== 'am' && l.half !== 'pm') delete l.half;
+    if (l.plan != null) l.plan = l.plan === true;
     // 旧「Excelから移行（月単位）」の記録は月まとめ扱いにする
     if (l.bulk === undefined) {
       l.bulk = String(l.id).startsWith('seed-') || String(l.id).startsWith('bulk-')
@@ -270,6 +366,25 @@ function normalizeEmployee(e) {
   });
 }
 
+/** データ全体の正規化（会社の設定を含む） */
+function normalizeData(d) {
+  if (!Array.isArray(d.employees)) d.employees = [];
+  d.employees = d.employees.filter(isObj);
+  const ids = new Set();
+  d.employees.forEach((e) => {
+    if (!e.id || ids.has(String(e.id))) e.id = uid();
+    ids.add(String(e.id));
+    normalizeEmployee(e);
+  });
+  if (!isObj(d.settings)) d.settings = {};
+  if (d.settings.companyName != null) d.settings.companyName = String(d.settings.companyName).slice(0, 40);
+  if (!d.version) d.version = 1;
+  return d;
+}
+function companyName() {
+  return DATA && isObj(DATA.settings) && DATA.settings.companyName ? DATA.settings.companyName : '';
+}
+
 /** 読み込むJSONの検査。致命的な問題は errors、計算に使えない記録は warnings */
 function checkImport(d) {
   const errors = [], warnings = [];
@@ -278,7 +393,7 @@ function checkImport(d) {
     const who = `${i + 1}人目${e && e.name ? `（${String(e.name).slice(0, 20)}）` : ''}`;
     if (!isObj(e)) { errors.push(`${who}のデータが壊れています`); return; }
     if (!isYmd(e.hireDate)) errors.push(`${who}の入社日が正しくありません`);
-    const bad = (Array.isArray(e.leaves) ? e.leaves : []).filter((l) => !isObj(l) || !isYmd(l.date) || !(Number(l.days) > 0)).length;
+    const bad = (Array.isArray(e.leaves) ? e.leaves : []).filter((l) => !isObj(l) || !isYmd(l.date) || !(leaveDaysOf(e, l) > 0)).length;
     if (bad) warnings.push(`${who}：日付か日数が正しくない記録 ${bad}件（計算には使われません）`);
   });
   return { errors, warnings };
@@ -289,12 +404,12 @@ const KEY_PREV = 'yukyu-app-v1-prev';
 function keepPrevious(reason) {
   try {
     if (!DATA || !DATA.employees || !DATA.employees.length) return;
-    localStorage.setItem(KEY_PREV, JSON.stringify({ savedAt: new Date().toISOString(), reason, data: DATA }));
+    localStorage.setItem(keyPrev(), JSON.stringify({ savedAt: new Date().toISOString(), reason, data: DATA }));
   } catch (e) { /* 保存できない環境 */ }
 }
 function loadPrevious() {
   try {
-    const p = JSON.parse(localStorage.getItem(KEY_PREV) || 'null');
+    const p = JSON.parse(localStorage.getItem(keyPrev()) || 'null');
     return p && isObj(p.data) && Array.isArray(p.data.employees) ? p : null;
   } catch (e) { return null; }
 }
@@ -304,7 +419,7 @@ function loadPrevious() {
    矢印（スピナー）でも、キーボードで直接打ち込んでも同じように動くようにする。
    入力中は再描画しない。再描画は「欄から完全に離れたあと」だけ行い、
    こちらからフォーカスを動かすことは一切しない。 */
-const NUMKEYS = ['wd', 'bulk', 'ov'];
+const NUMKEYS = ['wd', 'bulk', 'ov', 'sd'];
 function numKeyOf(el) {
   if (!el || !el.dataset) return null;
   for (const k of NUMKEYS) if (el.dataset[k] != null) return k;
@@ -352,21 +467,6 @@ function showSelectedChip(panel) {
   row.scrollLeft = Math.max(0, on.offsetLeft - row.offsetLeft - (row.clientWidth - on.offsetWidth) / 2);
 }
 
-/** 出勤日数画面の年合計だけを更新 */
-function refreshWorkTotals() {
-  const emp = currentEmp();
-  if (!emp) return;
-  $$('#p-work [data-wsum]').forEach((el) => {
-    const y = el.dataset.wsum;
-    let sum = 0, cnt = 0;
-    for (let m = 1; m <= 12; m++) {
-      const v = emp.workdays[`${y}-${pad2(m)}`];
-      if (typeof v === 'number') { sum += v; cnt++; }
-    }
-    el.innerHTML = cnt ? `${cnt}ヶ月入力 / 計 <b class="num">${sum}</b>日` : '未入力';
-  });
-}
-
 /* =========================================================================
    CSV 出力
    ========================================================================= */
@@ -389,141 +489,6 @@ function downloadText(filename, text, mime) {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
-/** 管理簿のCSV行（1人分 or 全員分） */
-function registerRows(emps) {
-  const now = today();
-  const out = [];
-  out.push(['年次有給休暇管理簿（労働基準法施行規則 第24条の7）']);
-  out.push([`作成日: ${fmtJp(now)}`, '保存期間: 基準日から3年間']);
-  out.push([]);
-  out.push(['■ 年度ごとの集計']);
-  out.push(['氏名', '社員番号', '入社日', '基準日', '対象期間', '付与日数', '前年繰越',
-            '使用可能日数', '取得日数', '時効消滅', '期末残日数', '年5日取得義務', '状態']);
-  for (const e of emps) {
-    for (const r of buildRegister(e, now)) {
-      out.push([
-        e.name, e.empNo || '', e.hireDate,
-        ymd(r.from),
-        `${fmtJpShort(r.from)}〜${fmtJpShort(new Date(r.to.getTime() - 86400000))}`,
-        r.granted, r.carry, r.total, r.taken, r.expired, r.endRemaining,
-        r.required5 ? (r.met5 ? '達成' : (r.closed ? '未達' : `進行中 ${fmtD(r.taken)}/5`)) : '対象外',
-        r.closed ? '確定' : '進行中',
-      ]);
-    }
-  }
-  out.push([]);
-  out.push(['■ 取得時季の明細']);
-  out.push(['氏名', '社員番号', '基準日', '取得年月日', '曜日', '取得日数', '備考']);
-  for (const e of emps) {
-    for (const r of buildRegister(e, now)) {
-      for (const it of r.items) {
-        const d = parseYmd(it.date);
-        // 月まとめは日付が分からないので「年月」だけを出す（実在しない取得日を書かない）
-        out.push(it.bulk
-          ? [e.name, e.empNo || '', ymd(r.from), it.date.slice(0, 7), '', it.days, '月まとめ入力（日付未特定）']
-          : [e.name, e.empNo || '', ymd(r.from), it.date, WD[d.getDay()], it.days, it.note || '']);
-      }
-    }
-  }
-  return out;
-}
-
-/* =========================================================================
-   年次有給休暇管理簿（画面／印刷）
-   ========================================================================= */
-function openRegister(emps, title) {
-  const now = today();
-  const ov = document.createElement('div');
-  ov.className = 'reg-ov';
-
-  let sheets = '';
-  for (const e of emps) {
-    const rows = buildRegister(e, now);
-    if (!rows.length) {
-      sheets += `<div class="reg-sheet"><h3>年次有給休暇管理簿</h3>
-        <p class="law">労働基準法施行規則 第24条の7</p>
-        <div class="empty">${esc(e.name)}はまだ付与日を迎えていません</div></div>`;
-      continue;
-    }
-    for (const r of rows.slice().reverse()) {
-      let body = '';
-      let run = r.total;
-      for (const it of r.items) {
-        const d = parseYmd(it.date);
-        run = nd(run - it.days);
-        const note = it.bulk ? '月まとめ入力（日付未特定）' : (it.note || '');
-        body += `<tr><td>${it.bulk
-            ? `${d.getFullYear()}/${d.getMonth() + 1}<small>月中</small>`
-            : `${fmtJpShort(d)}<small>${WD[d.getDay()]}曜日</small>`}${note ? `<span class="note-inline">${esc(note)}</span>` : ''}</td>
-          <td class="num">${fmtD(it.days)}</td>
-          <td class="num">${fmtD(run)}</td>
-          <td class="note-col" style="text-align:left;white-space:normal">${esc(note)}</td></tr>`;
-      }
-      if (!r.items.length) body = `<tr><td colspan="4"><div class="empty" style="padding:14px">取得実績なし</div></td></tr>`;
-
-      sheets += `<div class="reg-sheet">
-        <h3>年次有給休暇管理簿</h3>
-        <p class="law">労働基準法施行規則 第24条の7 ／ 基準日から3年間保存</p>
-        <div class="reg-grid">
-          <div><span class="lb">氏名</span><b>${esc(e.name)}</b>${e.empNo ? `<small>社員番号 ${esc(e.empNo)}</small>` : ''}</div>
-          <div><span class="lb">入社年月日</span><b>${fmtJpShort(parseYmd(e.hireDate))}</b></div>
-          <div><span class="lb">基準日</span><b>${fmtJpShort(r.from)}</b></div>
-          <div><span class="lb">対象期間</span><b class="sm"><span class="nw">${fmtJpShort(r.from)}〜</span><span class="nw">${fmtJpShort(new Date(r.to.getTime() - 86400000))}</span></b></div>
-        </div>
-        <div class="reg-grid">
-          <div><span class="lb">付与日数</span><b>${fmtD(r.granted)}日</b></div>
-          <div><span class="lb">前年繰越</span><b>${fmtD(r.carry)}日</b></div>
-          <div><span class="lb">使用可能日数</span><b>${fmtD(r.total)}日</b></div>
-        </div>
-        <div class="tw"><table>
-          <thead><tr><th>取得年月日（時季）</th><th>日数</th><th>残日数</th><th class="note-col" style="text-align:left">備考</th></tr></thead>
-          <tbody>${body}</tbody>
-        </table></div>
-        <div class="reg-grid tot">
-          <div><span class="lb">取得日数 計</span><b>${fmtD(r.taken)}日</b></div>
-          <div><span class="lb">時効消滅</span><b${r.expired > 0 ? ' style="color:var(--danger)"' : ''}>${fmtD(r.expired)}日</b></div>
-          <div><span class="lb">${r.closed ? '期末残日数' : '現在の残日数'}</span><b>${fmtD(r.endRemaining)}日</b></div>
-          <div><span class="lb">年5日取得義務</span><b>${r.required5
-            ? `${fmtD(Math.min(r.taken, 5))}/5 ${r.met5 ? '<span class="pill ok">達成</span>' : (r.closed ? '<span class="pill danger">未達</span>' : '<span class="pill warn">進行中</span>')}`
-            : '<span class="pill mute">対象外</span>'}</b></div>
-        </div>
-        <p class="reg-note">※ 付与日数は直前1年間の出勤実績（年間所定労働日数 ${r.lot.annualDays}日／${esc(r.lot.categoryShort)}）から労働基準法第39条の比例付与表により算定。${r.lot.overridden ? '本年度は手動で設定した日数を使用。' : ''}<br>
-        ※ 消化は有効期限の近い付与分から充当。付与日から2年で時効消滅（労働基準法 第115条）。</p>
-      </div>`;
-    }
-  }
-
-  ov.innerHTML = `
-    <div class="reg-top">
-      <button class="ico-btn" data-reg="close" aria-label="閉じる" style="color:var(--text)">${ICON.x}</button>
-      <b>${esc(title)}</b>
-      <button class="btn sm" data-reg="csv" style="margin-left:auto">${ICON.down}CSV</button>
-      <button class="btn sm primary" data-reg="print">${ICON.print}印刷</button>
-    </div>
-    <div class="reg-body">${sheets}
-      <p class="reg-note noprint" style="text-align:center">印刷ダイアログで「PDFとして保存」を選ぶとPDFになります。</p>
-    </div>`;
-
-  document.body.appendChild(ov);
-  document.body.style.overflow = 'hidden';
-  const close = () => { ov.remove(); document.body.style.overflow = ''; };
-
-  ov.addEventListener('click', (e) => {
-    const b = e.target.closest('[data-reg]');
-    if (!b) return;
-    if (b.dataset.reg === 'close') close();
-    if (b.dataset.reg === 'print') {
-      if (window.__PREVIEW__) { toast('印刷はGitHub Pages版で使えます'); return; }
-      window.print();
-    }
-    if (b.dataset.reg === 'csv') {
-      if (window.__PREVIEW__) { toast('CSV保存はGitHub Pages版で使えます'); return; }
-      downloadText(`年次有給休暇管理簿_${ymd(today())}.csv`, toCSV(registerRows(emps)));
-      toast('CSVを保存しました');
-    }
-  });
-}
-
 /* =========================================================================
    一覧（全従業員）
    ========================================================================= */
@@ -539,75 +504,6 @@ function welcomeHtml() {
     <button class="btn full" data-act="import">バックアップJSONを読み込む</button>
   </div>`;
 }
-
-function renderList() {
-  const box = $('#p-list');
-  if (!DATA.employees.length) { box.innerHTML = welcomeHtml(); return; }
-
-  const now = today();
-  const items = DATA.employees.map((e) => {
-    const r = simulate(e, now);
-    const dl = r.nextExpiry ? r.nextExpiry.daysLeft : 9999;
-    const ob = r.currentObligation;
-    const lv = (r.nextExpiry && dl <= 30) || (ob && ob.shortage > 0 && ob.daysLeft <= 90)
-      ? 'danger'
-      : (r.nextExpiry && dl <= 90) || (ob && ob.shortage > 0) ? 'warn' : 'ok';
-    return { e, r, dl, ob, lv };
-  });
-
-  const sorted = items.slice().sort((a, b) =>
-    SORT === 'name' ? a.e.name.localeCompare(b.e.name, 'ja')
-      : SORT === 'balance' ? b.r.balance - a.r.balance
-        : a.dl - b.dl);
-
-  const soon = items.filter((x) => x.dl <= 90).length;
-  const short5 = items.filter((x) => x.ob && x.ob.shortage > 0).length;
-
-  let html = `<div class="eyebrow"><b>従業員一覧</b><span class="nw">${fmtJp(now)}（${WD[now.getDay()]}）</span></div>
-  <div class="sumrow">
-    <div class="t"><b>${items.length}</b><span>登録人数</span></div>
-    <div class="t ${soon ? 'alert' : ''}"><b>${soon}</b><span>3ヶ月以内に<wbr>消滅</span></div>
-    <div class="t ${short5 ? 'warn' : ''}"><b>${short5}</b><span>年5日<wbr>未達</span></div>
-  </div>
-
-  <div class="seg sorter">
-    ${[['urgent', '期限が近い順'], ['balance', '残日数順'], ['name', '名前順']].map(([v, t]) =>
-      `<button data-sort="${v}" class="${SORT === v ? 'on' : ''}">${t}</button>`).join('')}
-  </div>`;
-
-  for (const x of sorted) {
-    const { e, r, ob, lv } = x;
-    html += `<button class="ecard lv-${lv}" data-open="${esc(e.id)}">
-      <div class="top">
-        <span class="nm">${esc(e.name || '(名称未設定)')}</span>
-        <span class="tn">${isYmd(e.hireDate) ? tenureText(parseYmd(e.hireDate), now) : ''}</span>
-        <span class="bal">${fmtD(r.balance)}<small>日</small></span>
-      </div>
-      <div class="lines">
-        ${r.nextExpiry
-          ? `<div class="ln ${x.dl <= 30 ? 'danger' : x.dl <= 90 ? 'warn' : ''}">${x.dl <= 90 ? ICON.alert : ICON.clock}<span class="tx">${fmtJpShort(r.nextExpiry.date)}に<b>${fmtD(r.nextExpiry.days)}日</b>消滅<span class="nw">（あと${x.dl}日）</span></span></div>`
-          : `<div class="ln">${ICON.info}<span class="tx">消滅予定はありません</span></div>`}
-        ${ob
-          ? `<div class="ln ${ob.shortage <= 0 ? 'ok' : ob.daysLeft <= 90 ? 'danger' : 'warn'}">${ob.shortage <= 0 ? ICON.check : ICON.alert}<span class="tx">年5日義務 <b>${fmtD(ob.taken)}/5</b>${ob.shortage > 0 ? `<span class="nw">（あと${fmtD(ob.shortage)}日）</span>` : ''}</span><span class="mini"><i style="width:${Math.min(100, (ob.taken / 5) * 100).toFixed(0)}%"></i></span></div>`
-          : ''}
-        ${r.nextGrant
-          ? `<div class="ln">${ICON.gift}<span class="tx">次回付与 ${fmtJpShort(r.nextGrant.date)}　<b>＋${fmtD(r.nextGrant.granted)}日</b></span></div>`
-          : ''}
-      </div>
-    </button>`;
-  }
-
-  html += `<h2 class="sec">年次有給休暇管理簿</h2><div class="card">
-    <p class="sub" style="margin-bottom:14px">労働基準法で作成と3年間の保存が義務づけられている帳簿です。印刷・PDF保存・CSV保存ができます。</p>
-    <div class="row">
-      <button class="btn" data-act="regall">${ICON.doc}全員分を表示</button>
-      <button class="btn" data-act="regcsv">${ICON.down}CSVで保存</button>
-    </div>
-  </div>`;
-
-  box.innerHTML = html;
-}
-
 
 /* =========================================================================
    日付ピッカー（自前のカレンダー）
@@ -742,253 +638,36 @@ function openDatePicker(value, opts, onPick) {
 }
 
 /* =========================================================================
-   ホーム
-   ========================================================================= */
-function renderHome() {
-  const emp = currentEmp();
-  const box = $('#p-home');
-  if (!emp) { box.innerHTML = welcomeHtml(); return; }
-  const now = today();
-  const r = simulate(emp, now);
-  const hire = isYmd(emp.hireDate) ? parseYmd(emp.hireDate) : now;
-
-  /* ---- ヒーロー（残日数カード） ---- */
-  let html = `
-  <div class="card hero">
-    <div class="who"><b>${esc(emp.name || '(名称未設定)')}</b><span class="tn">${tenureText(hire, now)}</span></div>
-    ${emp.empNo ? `<div class="eno">No.${esc(emp.empNo)}</div>` : ''}
-    <div class="lbl">使える有給</div>
-    <div class="big"><span class="v">${fmtD(r.balance)}</span><span class="u">日</span></div>
-    <div class="cap">${fmtJp(now)} 時点</div>
-    <div class="hero-split">
-      <div><span>次に消滅</span><b>${r.nextExpiry
-        ? `${fmtJpShort(r.nextExpiry.date)}<small>${fmtD(r.nextExpiry.days)}日</small>` : '—'}</b></div>
-      <div><span>次回付与</span><b>${r.nextGrant
-        ? `${fmtJpShort(r.nextGrant.date)}<small>＋${fmtD(r.nextGrant.granted)}日</small>` : '—'}</b></div>
-    </div>
-    ${r.planned.length
-      ? `<div class="hero-plan" data-k="planned"><span>取得予定 ${fmtD(r.plannedDays)}日を引くと</span><b>${fmtD(r.plannedBalance)}日</b></div>`
-      : ''}
-  </div>`;
-
-  /* ---- 消滅アラート ---- */
-  if (r.nextExpiry) {
-    const dl = r.nextExpiry.daysLeft;
-    const lv = dl <= 30 ? 'danger' : dl <= 90 ? 'warn' : 'info';
-    const icon = dl <= 90 ? ICON.alert : ICON.clock;
-    html += `<div class="note ${lv}">${icon}<div style="flex:1;min-width:0">
-      <div class="t">${fmtJp(r.nextExpiry.date)}に <em class="nw">${fmtD(r.nextExpiry.days)}日</em> が消滅します</div>
-      <div class="d">期限まで <b>あと${dl}日</b>${dl <= 90 ? ' — 計画的に取得してください。' : '。'}</div>
-      <div class="bar"><i style="width:${Math.max(3, Math.min(100, (1 - dl / 730) * 100)).toFixed(0)}%"></i></div>
-    </div></div>`;
-  } else if (r.balance <= 0) {
-    html += `<div class="note info">${ICON.info}<div><div class="t">現在使える有給はありません</div>
-      <div class="d">${r.nextGrant ? `次回付与は ${fmtJp(r.nextGrant.date)}（${fmtD(r.nextGrant.granted)}日）です。` : ''}</div></div></div>`;
-  }
-
-  /* ---- 年5日取得義務 ---- */
-  const ob = r.currentObligation;
-  if (ob) {
-    const done = ob.shortage <= 0;
-    const lv = done ? 'ok' : ob.daysLeft <= 90 ? 'danger' : 'warn';
-    html += `<div class="note ${lv}">${done ? ICON.check : ICON.alert}<div style="flex:1;min-width:0">
-      <div class="t">年5日の取得義務 <em class="nw">${fmtD(ob.taken)} / 5日</em>${done ? ' 達成' : `<span class="nw">（あと${fmtD(ob.shortage)}日）</span>`}</div>
-      <div class="d">対象期間 <span class="nw">${fmtJpShort(ob.from)}〜${fmtJpShort(new Date(ob.to.getTime() - 86400000))}</span><span class="nw">（あと${ob.daysLeft}日）</span></div>
-      <div class="bar"><i style="width:${Math.min(100, (ob.taken / 5) * 100).toFixed(0)}%"></i></div>
-    </div></div>`;
-  }
-
-  /* ---- 残高不足の警告 ---- */
-  if (r.shortfalls.length) {
-    const s = nd(r.shortfalls.reduce((a, b) => a + b.days, 0));
-    html += `<div class="note danger">${ICON.alert}<div style="min-width:0"><div class="t">有給が足りず、引けていない記録があります（計<em>${fmtD(s)}日</em>）</div>
-      <div class="d">${r.shortfalls.slice(0, 4).map((x) => `${leaveLabel(x)}（${fmtD(x.days)}日分）`).join('、')}${r.shortfalls.length > 4 ? ' ほか' : ''}<br>
-      最初の付与日より前の取得や、出勤日数の入力漏れ・記録の誤りが考えられます。「記録」タブで確認できます。</div></div></div>`;
-  }
-
-  /* ---- 付与ロット一覧 ---- */
-  const past = r.lots.filter((l) => !l.future);
-  html += `<h2 class="sec">付与と消化の内訳</h2><div class="card"><div class="tw"><table>
-    <thead><tr><th>付与日</th><th>付与</th><th>消化</th><th>消滅</th><th>残</th><th>有効期限</th></tr></thead><tbody>`;
-  for (const l of past) {
-    const alive = l.expiry > now;
-    const cls = alive && l.remaining > 0 ? 'now' : alive ? '' : 'dim';
-    html += `<tr class="${cls}">
-      <td>${fmtJpShort(l.date)}<small>${l.label}</small></td>
-      <td class="num">${fmtD(l.granted)}</td>
-      <td class="num">${fmtD(nd(l.used))}</td>
-      <td class="num">${l.expired > 0 ? `<span style="color:var(--danger);font-weight:700">${fmtD(nd(l.expired))}</span>` : '—'}</td>
-      <td class="num"><b>${alive ? fmtD(nd(l.remaining)) : '—'}</b></td>
-      <td class="num" style="color:${alive && diffDays(now, l.expiry) <= 90 ? 'var(--danger);font-weight:700' : 'inherit'}">${fmtJpShort(l.expiry)}</td>
-    </tr>`;
-  }
-  if (!past.length) html += `<tr><td colspan="6"><div class="empty">まだ付与日を迎えていません</div></td></tr>`;
-  html += `</tbody></table></div></div>`;
-
-  /* ---- 今後の付与予定 ---- */
-  const fut = r.lots.filter((l) => l.future).slice(0, 3);
-  if (fut.length) {
-    html += `<h2 class="sec">今後の付与予定</h2><div class="card">`;
-    for (const l of fut) {
-      html += `<div class="li">${ICON.gift.replace('<svg', '<svg style="width:20px;height:20px;flex:none;color:var(--gold)"')}
-        <div class="g"><div class="d1">${fmtJp(l.date)}</div>
-        <div class="d2 wrap">${l.label}・${esc(l.categoryShort)}／<span class="nw">有効期限 ${fmtJpShort(l.expiry)}</span></div></div>
-        <div class="amt">＋${fmtD(l.granted)}<small>日</small></div></div>`;
-    }
-    html += `<p class="sub" style="margin-top:10px">※ 直近の出勤日数から推定した見込みです。実績が入ると自動で更新されます。</p></div>`;
-  }
-
-  /* ---- 管理簿 ---- */
-  html += `<h2 class="sec">年次有給休暇管理簿</h2><div class="card">
-    <p class="sub" style="margin-bottom:14px">${esc(emp.name)}の法定帳簿です。印刷・PDF保存・CSV保存ができます。</p>
-    <button class="btn full" data-act="reg1">${ICON.doc}管理簿を表示する</button>
-  </div>`;
-
-  /* ---- 累計 ---- */
-  html += `<h2 class="sec">これまでの累計</h2><div class="card">
-    <div class="kv"><span>付与された日数</span><b>${fmtD(r.totalGranted)}<small>日</small></b></div>
-    <div class="kv"><span>取得した日数</span><b>${fmtD(r.totalUsed)}<small>日</small></b></div>
-    <div class="kv"><span>消滅した日数</span><b style="color:${r.totalExpired > 0 ? 'var(--danger)' : 'inherit'}">${fmtD(r.totalExpired)}<small>日</small></b></div>
-    <div class="kv"><span>現在の残日数</span><b>${fmtD(r.balance)}<small>日</small></b></div>
-  </div>`;
-
-  box.innerHTML = html;
-}
-
-/* =========================================================================
    取得記録
    ========================================================================= */
 /** 記録タブ上部の残高表示（入力するとその場で更新される） */
 function balStripHtml(r) {
   const ob = r.currentObligation;
+  const emp = currentEmp();
   return `<div class="balstrip" aria-live="polite">
-    <div class="bs-main"><span>使える有給</span><b data-live="bal">${fmtD(r.balance)}</b><i>日</i></div>
-    <div class="s"><span>予定を引くと</span><b data-live="plan">${fmtD(r.plannedBalance)}</b><i>日</i></div>
-    <div class="s"><span>年5日義務</span><b data-live="ob">${ob ? fmtD(Math.min(ob.taken, 5)) : '—'}</b><i>${ob ? '/5' : ''}</i></div>
+    <div class="bs-main"><span>使える有給</span><em data-live="bal">${dhBI(r.balance, emp)}</em></div>
+    <div class="s"><span>予定を引くと</span><em data-live="plan">${dhBI(r.plannedBalance, emp)}</em></div>
+    <div class="s"><span>年5日義務</span><em data-live="ob">${obStripHtml(ob)}</em></div>
   </div>`;
+}
+/** 年5日の取得状況（例「3/5」。按分で5日以外のときはその日数） */
+function obStripHtml(ob) {
+  if (!ob) return '<b>—</b>';
+  return `<b>${fmtD(Math.min(ob.taken, ob.required))}</b><i>/${fmtD(ob.required)}</i>`;
 }
 function refreshLive() {
   const emp = currentEmp();
   if (!emp) return;
-  const r = simulate(emp, today());
-  const ob = r.currentObligation;
+  const r = sim(emp, today());
   const set = (k, v) => {
     const el = $(`#p-leave [data-live="${k}"]`);
-    if (!el || el.textContent === v) return;
-    el.textContent = v;
+    if (!el || el.innerHTML === v) return;
+    el.innerHTML = v;
     el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
   };
-  set('bal', fmtD(r.balance));
-  set('plan', fmtD(r.plannedBalance));
-  set('ob', ob ? fmtD(Math.min(ob.taken, 5)) : '—');
-}
-
-function renderLeave() {
-  const emp = currentEmp();
-  const box = $('#p-leave');
-  if (!emp) {
-    box.innerHTML = `<div class="card"><div class="empty">先に従業員を登録してください</div>
-      <button class="btn primary full" data-act="addemp">${ICON.plus}従業員を登録する</button></div>`;
-    return;
-  }
-  const now = today();
-  const r = simulate(emp, now);
-  let html = balStripHtml(r) + `<div class="seg big-seg">
-    <button data-lmode="single" class="${LEAVE_MODE === 'single' ? 'on' : ''}">1日ずつ入力</button>
-    <button data-lmode="bulk" class="${LEAVE_MODE === 'bulk' ? 'on' : ''}">月ごとにまとめて</button>
-  </div>`;
-  html += LEAVE_MODE === 'bulk' ? leaveBulkHtml(emp, now, r) : leaveSingleHtml(emp, now, r);
-  box.innerHTML = html;
-  if (LEAVE_MODE === 'bulk') showSelectedChip(box);
-}
-
-/* ---------- 1日ずつ入力 ---------- */
-function leaveSingleHtml(emp, now, r) {
-  const custom = LEAVE_DAYS !== 0.5 && LEAVE_DAYS !== 1;
-  const tk = ymd(now);
-
-  let html = `
-  <div class="card">
-    <h2 class="sec" style="margin-top:0">有給を取得した日を追加</h2>
-    <div class="field"><label class="fl" for="df-lvDate">取得日</label>
-      ${dateField('lvDate', LEAVE_DATE || tk)}
-      <div class="quick">
-        <button type="button" data-qd="0">今日</button>
-        <button type="button" data-qd="-1">昨日</button>
-        <button type="button" data-qd="-2">一昨日</button>
-      </div></div>
-    <div class="field"><label class="fl">日数</label>
-      <div class="seg">
-        <button data-days="1" class="${LEAVE_DAYS === 1 ? 'on' : ''}">1日</button>
-        <button data-days="0.5" class="${LEAVE_DAYS === 0.5 ? 'on' : ''}">半日</button>
-        <button data-days="custom" class="${custom ? 'on' : ''}">その他</button>
-      </div>
-      ${custom ? `<input type="number" id="lvDays" step="0.5" min="0.5" max="40" value="${fmtD(LEAVE_DAYS)}" style="margin-top:10px" inputmode="decimal" aria-label="日数（0.5日単位）">` : ''}
-    </div>
-    <div class="field"><label class="fl" for="lvNote">メモ（任意）</label>
-      <input type="text" id="lvNote" maxlength="100" placeholder="例：私用／旅行" value="${esc(LEAVE_NOTE)}"></div>
-    <button class="btn primary full" data-act="addleave">${ICON.plus}記録を追加</button>
-  </div>`;
-
-  /* 付与年度ごとにグループ化（計算に使う日付 eff で分ける） */
-  const shortMap = new Map(r.shortfalls.map((s) => [s.id, s.days]));
-  const planShortMap = new Map((r.plannedShortfalls || []).map((s) => [s.id, s.days]));
-  const lots = r.lots.filter((l) => !l.future || l.date <= addMonths(now, 12));
-  const groups = lots.map((l) => ({
-    from: l.date, to: addMonths(l.date, 12), lot: l, items: [],
-    label: `${fmtJpShort(l.date)} 〜 ${fmtJpShort(new Date(addMonths(l.date, 12).getTime() - 86400000))}`,
-  }));
-  const first = r.lots[0] ? r.lots[0].date : null;
-  const before = { label: '最初の付与日より前', items: [], lot: null,
-    note: 'まだ有給が付与されていない期間のため、この記録は残日数から引かれていません。' };
-  const later = { label: 'さらに先の予定', items: [], lot: null };
-  for (const lv of r.allLeaves) {
-    const d = parseYmd(lv.eff);
-    const g = groups.find((x) => d >= x.from && d < x.to);
-    if (g) g.items.push(lv);
-    else if (!first || d < first) before.items.push(lv);
-    else later.items.push(lv);
-  }
-  const shown = [];
-  if (later.items.length) shown.push(later);
-  shown.push(...[...groups].reverse().filter((g) => g.items.length));
-  if (before.items.length) shown.push(before);
-
-  const total = nd(r.allLeaves.reduce((s, l) => s + l.days, 0));
-  html += `<h2 class="sec">取得の記録（合計 <span class="num">${fmtD(total)}</span>日）</h2><div class="card">`;
-  if (!shown.length) {
-    html += `<div class="empty">まだ記録がありません</div>`;
-  } else {
-    for (const g of shown) {
-      const taken = nd(g.items.filter((l) => l.eff <= tk).reduce((s, l) => s + l.days, 0));
-      const sum = nd(g.items.reduce((s, l) => s + l.days, 0));
-      const ob = g.lot && !g.lot.future && g.lot.granted >= 10;
-      html += `<div class="yr"><span class="yr-l"><span class="nw">${esc(g.label)}</span>${g.lot ? `<span class="nw">（${g.lot.label}）</span>` : ''}</span>
-        <span class="yr-r">${fmtD(sum)}日${ob ? `<span class="pill ${taken >= 5 ? 'ok' : 'warn'}">義務 ${fmtD(Math.min(taken, 5))}/5</span>` : ''}</span></div>`;
-      if (g.note) html += `<p class="sub" style="margin:8px 0 0;color:var(--danger)">${esc(g.note)}</p>`;
-      for (const lv of g.items.slice().reverse()) {
-        const d = parseYmd(lv.date);
-        const planned = lv.eff > tk;
-        const sf = planned ? planShortMap.get(lv.id) : shortMap.get(lv.id);
-        const title = isBulk(lv) ? `${d.getFullYear()}年${d.getMonth() + 1}月` : `${fmtJp(d)}（${WD[d.getDay()]}）`;
-        const pills = (isBulk(lv) ? '<span class="pill mute">月まとめ</span>' : '')
-          + (planned ? '<span class="pill acc">予定</span>' : '')
-          + (sf ? `<span class="pill danger">不足 ${fmtD(sf)}日</span>` : '');
-        const memo = lv.note && !isBulk(lv) ? esc(lv.note) : '';
-        let sub = '';
-        if (sf) sub = `<div class="d2 bad">有給が${fmtD(sf)}日足りないため、その分は残日数から引けていません</div>`;
-        else if (isBulk(lv) && !planned && lv.eff !== lv.date) sub = `<div class="d2">今月分として、残日数から引いています</div>`;
-        else if (planned) sub = `<div class="d2">${isBulk(lv) ? 'その月になると' : '当日になると'}残日数から引かれます${memo ? `・${memo}` : ''}</div>`;
-        else if (memo) sub = `<div class="d2">${memo}</div>`;
-        html += `<div class="li${sf ? ' short' : ''}">
-          <div class="g"><div class="d1"><span>${title}</span>${pills}</div>${sub}</div>
-          <div class="amt">${fmtD(lv.days)}<small>日</small></div>
-          <button class="ico-btn" data-act="dellv" data-id="${esc(lv.id)}" aria-label="${esc(title)}の記録を削除">${ICON.trash}</button>
-        </div>`;
-      }
-    }
-  }
-  return html + `</div>`;
+  set('bal', dhBI(r.balance, emp));
+  set('plan', dhBI(r.plannedBalance, emp));
+  set('ob', obStripHtml(r.currentObligation));
 }
 
 /* ---------- 月ごとにまとめて入力 ---------- */
@@ -1085,126 +764,6 @@ function leaveBulkHtml(emp, now, r) {
   return html;
 }
 
-/* =========================================================================
-   出勤日数
-   ========================================================================= */
-function renderWork() {
-  const emp = currentEmp();
-  const box = $('#p-work');
-  if (!emp) {
-    box.innerHTML = `<div class="card"><div class="empty">先に従業員を登録してください</div>
-      <button class="btn primary full" data-act="addemp">${ICON.plus}従業員を登録する</button></div>`;
-    return;
-  }
-
-  const now = today();
-  const curY = now.getFullYear(), curM = now.getMonth() + 1;
-  const hireY = parseYmd(emp.hireDate).getFullYear();
-  const dataYears = Object.keys(emp.workdays || {}).map((k) => Number(k.slice(0, 4)));
-  const extra = Math.max(0, Number(loadUI().workExtraYears) || 0);
-  const maxY = Math.max(curY + 5 + extra, hireY, ...(dataYears.length ? dataYears : [0]));
-
-  const years = [];
-  for (let y = maxY; y >= hireY; y--) years.push(y);
-  if (WORK_YEAR == null || !years.includes(WORK_YEAR)) WORK_YEAR = Math.min(curY, maxY);
-
-  const stat = (y) => {
-    let sum = 0, cnt = 0;
-    for (let m = 1; m <= 12; m++) {
-      const v = emp.workdays[`${y}-${pad2(m)}`];
-      if (typeof v === 'number') { sum += v; cnt++; }
-    }
-    return { sum, cnt };
-  };
-
-  /* ---- 説明 ---- */
-  let html = `<div class="note info">${ICON.info}<div><div class="t">付与日数はここの入力から決まります</div>
-    <div class="d">月ごとに実際に出勤した日数を入れてください。付与日の直前12ヶ月（初回は6ヶ月×2）から「1年間の所定労働日数」を出し、比例付与表で日数を判定します。<br>
-    <b>先の年も入力できます。</b>予定の出勤日数を入れておくと、次回の付与日数がより正確に出ます。</div></div></div>`;
-
-  /* ---- 年を選ぶ ---- */
-  html += `<div class="ychips">
-    <button data-act="moreyears" class="add" title="さらに先の年を追加">＋ 年を追加</button>
-    ${years.map((y) => {
-      const st = stat(y);
-      const cls = [y === WORK_YEAR ? 'on' : '', y > curY ? 'fut' : ''].filter(Boolean).join(' ');
-      return `<button data-wyear="${y}" class="${cls}">${y}年${st.cnt ? `<i class="dot"></i>` : ''}</button>`;
-    }).join('')}
-  </div>`;
-
-  /* ---- 選んだ年のグリッド ---- */
-  const st = stat(WORK_YEAR);
-  const avg = st.cnt ? Math.round((st.sum / st.cnt) * 10) / 10 : 0;
-  const prevSt = stat(WORK_YEAR - 1);
-
-  let cells = '';
-  for (let m = 1; m <= 12; m++) {
-    const key = `${WORK_YEAR}-${pad2(m)}`;
-    const v = emp.workdays[key];
-    const future = WORK_YEAR > curY || (WORK_YEAR === curY && m > curM);
-    const isNow = WORK_YEAR === curY && m === curM;
-    cells += `<div class="m ${future ? 'fut' : ''} ${isNow ? 'cur' : ''}"><span>${m}月</span>
-      <input type="number" inputmode="numeric" min="0" max="31" placeholder="—"
-        value="${typeof v === 'number' ? v : ''}" data-wd="${key}" aria-label="${WORK_YEAR}年${m}月の出勤日数"></div>`;
-  }
-
-  html += `<div class="card">
-    <div class="yhead"><b>${WORK_YEAR}年</b>
-      ${WORK_YEAR > curY ? '<span class="pill acc">予定</span>' : ''}
-      <span class="sub" data-wsum="${WORK_YEAR}">${st.cnt ? `${st.cnt}ヶ月入力 / 計 <b class="num">${st.sum}</b>日` : '未入力'}</span></div>
-    <div class="mg">${cells}</div>
-    <div class="wsum">
-      <div><span>入力済み</span><b>${st.cnt} / 12ヶ月</b></div>
-      <div><span>年間合計</span><b class="num">${st.sum}日</b></div>
-      <div><span>月平均</span><b class="num">${st.cnt ? avg : '—'}日</b></div>
-    </div>
-    <div class="wbtns">
-      ${prevSt.cnt ? `<button class="btn sm" data-act="copyprev">${WORK_YEAR - 1}年から写す</button>` : ''}
-      <button class="btn sm" data-act="fillyear">全月に同じ数字</button>
-      ${st.cnt ? `<button class="btn sm danger" data-act="clearyear">この年を消す</button>` : ''}
-    </div>
-  </div>`;
-
-  /* ---- 年別サマリー ---- */
-  const listYears = years.filter((y) => stat(y).cnt || y === WORK_YEAR || y === curY);
-  html += `<h2 class="sec">年ごとの入力状況</h2><div class="card"><div class="tw"><table>
-    <thead><tr><th>年</th><th>入力</th><th>年間合計</th><th>月平均</th><th></th></tr></thead><tbody>`;
-  for (const y of listYears) {
-    const t = stat(y);
-    const a = t.cnt ? Math.round((t.sum / t.cnt) * 10) / 10 : 0;
-    html += `<tr class="${y === WORK_YEAR ? 'now' : t.cnt ? '' : 'dim'}">
-      <td>${y}年${y > curY ? ' <span class="pill acc">予定</span>' : ''}</td>
-      <td class="num">${t.cnt ? `${t.cnt}/12` : '—'}</td>
-      <td class="num">${t.cnt ? t.sum + '日' : '—'}</td>
-      <td class="num">${t.cnt ? a + '日' : '—'}</td>
-      <td><button class="btn sm" data-wyear="${y}">開く</button></td></tr>`;
-  }
-  html += `</tbody></table></div>
-    <p class="sub" style="margin-top:10px">入力のある年と今年だけを表示しています。ほかの年は上のチップから開いてください。</p></div>`;
-
-  /* ---- 付与日数の判定結果 ---- */
-  const r = simulate(emp, now);
-  html += `<h2 class="sec">付与日数の判定結果</h2><div class="card"><div class="tw"><table>
-    <thead><tr><th>基準日</th><th>年間日数</th><th>区分</th><th>付与日数</th></tr></thead><tbody>`;
-  for (const l of r.lots) {
-    const src = l.annualSource === 'actual' ? '<span class="pill ok">実績</span>'
-      : l.annualSource === 'partial' ? '<span class="pill warn">一部推定</span>'
-      : '<span class="pill mute">既定値</span>';
-    html += `<tr class="${l.future ? 'dim' : ''}">
-      <td>${fmtJpShort(l.date)}<small>${l.future ? '予定' : l.label}</small></td>
-      <td class="num">${l.annualDays}日<small>${src}</small></td>
-      <td>${esc(l.categoryShort)}</td>
-      <td class="num"><b style="font-size:15px">${fmtD(l.granted)}日</b>${l.overridden ? '<small><span class="pill acc">手入力</span></small>' : ''}</td>
-    </tr>`;
-  }
-  html += `</tbody></table></div>
-    <p class="sub" style="margin-top:10px">「一部推定」「既定値」は出勤日数が足りていない期間です。その年を埋めると精度が上がります（未入力の期間は、設定の「出勤日数が未入力のときの目安」＝週${emp.weeklyDays ?? 5}日くらい から推定）。</p></div>`;
-
-  html += grantTableHelp();
-  box.innerHTML = html;
-  showSelectedChip(box);
-}
-
 function grantTableHelp() {
   let rows = '';
   for (const r of GRANT_TABLE) {
@@ -1213,104 +772,10 @@ function grantTableHelp() {
   return `<details class="help"><summary>法定の付与日数表（労働基準法 第39条）</summary><div class="body">
     <div class="tw"><table><thead><tr><th>勤務区分</th><th>0.5年</th><th>1.5</th><th>2.5</th><th>3.5</th><th>4.5</th><th>5.5</th><th>6.5〜</th></tr></thead>
     <tbody>${rows}</tbody></table></div>
-    <p style="margin:10px 0 0">※ 週30時間以上勤務の場合は日数にかかわらず最上段が適用されます。出勤率8割未満の年は付与されません（本アプリでは考慮していません）。</p>
+    <p style="margin:10px 0 0">※ 週30時間以上働く人は、勤務日数にかかわらず最上段（通常の付与）です（従業員の設定で指定）。出勤率8割未満の年は付与されません（設定の「付与のルール」で判定をオンにできます）。</p>
   </div></details>`;
 }
 
-/* =========================================================================
-   設定
-   ========================================================================= */
-function renderSet() {
-  HIRE_DIRTY = false; // 作り直したので「入社日を変えた」印は不要
-  const emp = currentEmp();
-  let html = `<h2 class="sec" style="margin-top:0">従業員</h2><div class="card">`;
-  for (const e of DATA.employees) {
-    const defLots = simulate(e, today()).lots.filter((l) => l.annualSource === 'default' && l.granted > 0);
-    html += `<div class="emp-card" data-emp="${esc(e.id)}">
-      <div class="top"><b>${esc(e.name || '(名称未設定)')}</b>
-        ${e.id === CUR ? '<span class="pill acc">表示中</span>' : ''}
-        <button class="ico-btn" style="margin-left:auto" data-act="delemp" data-id="${esc(e.id)}" aria-label="削除">${ICON.trash}</button></div>
-      <div class="row" style="margin-bottom:14px">
-        <div><label class="fl">氏名</label><input type="text" maxlength="40" value="${esc(e.name)}" data-ef="name" data-id="${esc(e.id)}" aria-label="氏名"></div>
-        <div><label class="fl">社員番号</label><input type="text" maxlength="20" value="${esc(e.empNo || '')}" data-ef="empNo" data-id="${esc(e.id)}" placeholder="任意" aria-label="社員番号"></div>
-      </div>
-      <div class="row hire-row">
-        <div><label class="fl">入社日</label>${dateField('hire:' + e.id, e.hireDate)}</div>
-        <div><label class="fl">出勤日数が未入力のときの目安</label>
-          <select class="inp" data-ef="weeklyDays" data-id="${esc(e.id)}" aria-label="出勤日数が未入力のときの目安">
-            ${[1, 2, 3, 4, 5].map((n) => `<option value="${n}" ${Number(e.weeklyDays) === n ? 'selected' : ''}>週${n}日くらい</option>`).join('')}
-          </select></div>
-      </div>
-      <div class="hintbox">
-        付与日数は <b>「出勤」タブに入れた実際の出勤日数</b> から自動で決まります。
-        上の目安が使われるのは、出勤日数がまだ入っていない期間だけです。
-        ${defLots.length
-          ? `<div class="hintwarn">${ICON.alert}<div>
-               <b>${defLots.length}回分の付与</b>が、実績ではなく目安で計算されています
-               （${defLots.slice(0, 3).map((l) => fmtJpShort(l.date)).join('、')}${defLots.length > 3 ? ' ほか' : ''}）。<br>
-               正確にするには、その前1年分の出勤日数を入れてください。
-             </div></div>
-             <button class="btn sm full" data-opendays="${esc(e.id)}" style="margin-top:9px">出勤日数を入れる</button>`
-          : `<div class="hintok">${ICON.check}<div>すべての付与が実績から計算されています。</div></div>`}
-      </div>
-    </div>`;
-  }
-  html += `<button class="btn full" data-act="addemp">${ICON.plus}従業員を追加</button></div>`;
-
-  /* 付与日数の上書き */
-  if (emp) {
-    const r = simulate(emp, today());
-    html += `<h2 class="sec">付与日数の手動調整（${esc(emp.name)}）</h2><div class="card">
-      <p class="sub" style="margin-bottom:12px">通常は出勤日数から自動で決まります。就業規則で法定を上回る日数を付与している場合など、その回だけ日数を上書きしたいときに使ってください。空欄にすると自動計算に戻ります。</p>`;
-    for (const l of r.lots) {
-      html += `<div class="li"><div class="g"><div class="d1"><span class="num">${fmtJpShort(l.date)}</span><span>${l.label}</span>${l.future ? '<span class="pill mute">予定</span>' : ''}</div>
-        <div class="d2">自動計算 ${fmtD(l.autoDays)}日${l.overridden ? '・<b style="color:var(--gold-ink)">手動で上書き中</b>' : ''}</div></div>
-        <input type="number" step="0.5" min="0" max="99" style="width:92px;text-align:center" placeholder="${fmtD(l.autoDays)}"
-          value="${l.overridden ? fmtD(l.granted) : ''}" data-ov="${l.key}" aria-label="${fmtJpShort(l.date)}の付与日数"></div>`;
-    }
-    html += `</div>`;
-  }
-
-  /* データ */
-  const prev = loadPrevious();
-  html += `<h2 class="sec">データ</h2><div class="card">
-    <p class="sub" style="margin-bottom:14px">データはこの端末のブラウザ内にだけ保存され、外部には送信されません。機種変更やバックアップにはJSONの書き出し／読み込みを使ってください。</p>
-    <div class="row" style="margin-bottom:10px">
-      <button class="btn" data-act="export">${ICON.down}書き出し</button>
-      <button class="btn" data-act="import">読み込み</button>
-    </div>
-    ${prev ? `<button class="btn quiet full" data-act="restoreprev" style="margin-bottom:6px">直前のデータに戻す（${esc(prevLabel(prev))}）</button>` : ''}
-    <button class="btn danger full" data-act="reset">この端末のデータを消去</button>
-  </div>`;
-
-  /* 表示 */
-  const ui = loadUI();
-  const th = ui.theme || 'auto';
-  html += `<h2 class="sec">表示</h2><div class="card">
-    <label class="fl">テーマ</label>
-    <div class="seg">
-      ${[['auto', '自動'], ['light', 'ライト'], ['dark', 'ダーク']].map(([v, t]) =>
-        `<button data-theme="${v}" class="${th === v ? 'on' : ''}">${t}</button>`).join('')}
-    </div>
-  </div>`;
-
-  html += grantTableHelp();
-  html += `<details class="help"><summary>計算ルールについて</summary><div class="body">
-    <p><b>基準日</b>：入社日の6ヶ月後、以降1年ごと。月末入社の場合は該当月の末日に丸めます。</p>
-    <p><b>時効</b>：付与日から2年で消滅します（労基法 第115条）。</p>
-    <p><b>消化の順番</b>：有効期限の近いもの（＝古い付与分）から消費します。</p>
-    <p><b>年5日の取得義務</b>：10日以上付与された場合、付与日から1年以内に5日取得させる義務があります（労基法 第39条第7項）。</p>
-    <p style="color:var(--danger)"><b>ご注意</b>：本アプリは法定の最低基準に基づく目安です。就業規則で法定を上回る付与や、出勤率8割未満による不付与、時間単位年休などは反映していません。最終的な判断は就業規則と実際の労務管理でご確認ください。</p>
-  </div></details>
-  <h2 class="sec">アプリの更新</h2><div class="card">
-    <div class="kv"><span>いま動いているバージョン</span><b>${APP_VERSION}</b></div>
-    <p class="sub" style="margin:12px 0 14px">最新版が出ているか確認して、あれば読み込み直します。</p>
-    <button class="btn full" data-act="update">更新を確認する</button>
-  </div>
-  <p class="verline"><b>有給管理</b>${APP_VERSION}</p>`;
-
-  $('#p-set').innerHTML = html;
-}
 function prevLabel(p) {
   const d = new Date(p.savedAt);
   const when = isNaN(d) ? '' : `${d.getMonth() + 1}/${d.getDate()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -1320,24 +785,57 @@ function prevLabel(p) {
 /* =========================================================================
    描画 / タブ
    ========================================================================= */
+/** 従業員の選択欄（在籍者を先に、退職者は後ろにまとめる） */
 function renderEmpSelect() {
   const s = $('#empSelect');
-  s.innerHTML = DATA.employees.map((e) =>
-    `<option value="${esc(e.id)}" ${e.id === CUR ? 'selected' : ''}>${esc(e.name || '(名称未設定)')}</option>`).join('');
-  s.style.display = (TAB === 'list' || !DATA.employees.length) ? 'none' : '';
+  const now = today();
+  const act = [], ret = [];
+  for (const e of DATA.employees) (isRetired(e, now) ? ret : act).push(e);
+  const opt = (e) => `<option value="${esc(e.id)}" ${e.id === CUR ? 'selected' : ''}>${esc(e.name || '(名称未設定)')}${e.empNo ? `（${esc(e.empNo)}）` : ''}</option>`;
+  s.innerHTML = act.map(opt).join('') + (ret.length ? `<optgroup label="退職者">${ret.map(opt).join('')}</optgroup>` : '');
+  const perEmp = TAB === 'home' || TAB === 'leave' || TAB === 'work';
+  $('#empPick').style.display = perEmp && DATA.employees.length ? '' : 'none';
+}
+function isRetired(e, now) {
+  return isYmd(e.retireDate) && parseYmd(e.retireDate) < (now || today());
+}
+const PAGES = {
+  list: 'ダッシュボード', home: '個人', leave: '取得の記録', work: '出勤日数',
+  cal: 'カレンダー', docs: '帳票・出力', set: '設定', menu: 'メニュー',
+};
+function renderPageTitle() {
+  const now = today();
+  const t = $('#pgTitle');
+  if (t) t.innerHTML = `<small>${fmtJp(now)}（${WD[now.getDay()]}）</small><b>${esc(PAGES[TAB] || '')}</b>`;
+  const co = $('#coName');
+  if (co) co.textContent = companyName() || '（会社名 未設定）';
+  if (typeof renderSideFoot === 'function') renderSideFoot();
 }
 function render() {
   renderEmpSelect();
+  renderPageTitle();
+  const main = $('main');
+  if (main) main.classList.toggle('narrow', TAB === 'home' || TAB === 'leave' || TAB === 'work' || TAB === 'set');
   if (TAB === 'list') renderList();
   if (TAB === 'home') renderHome();
   if (TAB === 'leave') renderLeave();
   if (TAB === 'work') renderWork();
+  if (TAB === 'cal') renderCal();
+  if (TAB === 'docs') renderDocs();
   if (TAB === 'set') renderSet();
+  if (TAB === 'menu') renderMenu();
 }
 function setTab(t) {
+  if (!PAGES[t]) t = 'list';
   TAB = t;
   $$('.panel').forEach((p) => p.classList.toggle('on', p.id === 'p-' + t));
-  $$('nav button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+  const tabOf = (x) => (x === 'cal' || x === 'docs' || x === 'set' ? 'menu' : x);
+  $$('nav.tabbar [data-tab]').forEach((b) => b.classList.toggle('on', b.dataset.tab === tabOf(t)));
+  $$('.side [data-tab]').forEach((b) => {
+    const on = b.dataset.tab === t;
+    b.classList.toggle('on', on);
+    if (on) b.setAttribute('aria-current', 'page'); else b.removeAttribute('aria-current');
+  });
   render();
   window.scrollTo({ top: 0 });
 }
@@ -1367,7 +865,8 @@ function onDateInput(t) {
   const key = t.dataset.dfi;
   const v = t.value;
   updateDateCaption(t);
-  if (key === 'lvDate') { if (isYmd(v)) LEAVE_DATE = v; return; }
+  if (key === 'lvDate') { if (isYmd(v)) LEAVE_DATE = v; if (typeof onLeaveDateTyped === 'function') onLeaveDateTyped(v); return; }
+  if (typeof onDateInputExt === 'function' && onDateInputExt(key, v, t)) return;
   if (key.startsWith('hire:')) {
     const e = DATA.employees.find((x) => x.id === key.slice(5));
     if (!e) return;
@@ -1377,7 +876,7 @@ function onDateInput(t) {
       return;
     }
     if (!isYmd(v) || e.hireDate === v) return;
-    e.hireDate = v; saveData(); HIRE_DIRTY = true;
+    e.hireDate = v; saveData('入社日を変更'); HIRE_DIRTY = true;
   }
 }
 document.addEventListener('change', (ev) => {
@@ -1411,6 +910,7 @@ document.addEventListener('click', (ev) => {
     return;
   }
 
+  if (typeof openDateExt === 'function' && openDateExt(key)) return;
   if (key.startsWith('hire:')) {
     const id = key.slice(5);
     const e = DATA.employees.find((x) => x.id === id);
@@ -1418,60 +918,10 @@ document.addEventListener('click', (ev) => {
     openDatePicker(e.hireDate, { minYear: Math.max(1950, now.getFullYear() - 50), maxYear: now.getFullYear() + 1 },
       (picked) => {
         if (!hireDateOk(picked)) { toast('入社日として使えない日付です'); return; }
-        e.hireDate = picked; saveData(); HIRE_DIRTY = false; renderSet(); toast('入社日を更新しました');
+        e.hireDate = picked; saveData('入社日を変更'); HIRE_DIRTY = false; renderSet(); toast('入社日を更新しました');
       });
   }
 });
-
-/* ---- 「記録を追加」 ---- */
-async function addLeave(emp) {
-  const now = today();
-  const inp = $('#df-lvDate');
-  const date = inp ? inp.value : (LEAVE_DATE || ymd(now));
-  if (!isYmd(date)) { toast('取得日を最後まで正しく入れてください'); if (inp) inp.focus(); return; }
-  if (isYmd(emp.hireDate) && date < emp.hireDate) {
-    toast(`入社日（${fmtJpShort(parseYmd(emp.hireDate))}）より前の日付です`); return;
-  }
-  if (parseYmd(date) > addMonths(now, 24)) { toast('2年より先の日付は記録できません'); return; }
-
-  const dinp = $('#lvDays');
-  const days = dinp ? numOrNull(dinp.value, 999) : LEAVE_DAYS;
-  if (days == null || !(days > 0)) { toast('日数を入力してください'); if (dinp) dinp.focus(); return; }
-  if (Math.round(days * 2) !== days * 2) { toast('日数は0.5日単位で入れてください'); if (dinp) dinp.focus(); return; }
-  if (days > 40) { toast('1回に記録できるのは40日までです'); if (dinp) dinp.focus(); return; }
-
-  const d0 = parseYmd(date);
-  const md = `${d0.getMonth() + 1}月${d0.getDate()}日`;
-  const same = (emp.leaves || []).filter((l) => !isBulk(l) && l.date === date);
-  if (same.length) {
-    const ok = await askDialog({
-      title: 'この日はすでに記録があります',
-      message: `${fmtJp(d0)} には ${fmtD(nd(same.reduce((s, l) => s + Number(l.days), 0)))}日 の記録があります。\nさらに ${fmtD(days)}日 を追加しますか？`,
-      ok: '追加する',
-    });
-    if (!ok) return;
-  }
-
-  const id = uid();
-  emp.leaves = emp.leaves || [];
-  emp.leaves.push({ id, date, days, note: (LEAVE_NOTE || '').trim().slice(0, 100), bulk: false });
-  emp.leaves.sort((a, b) => a.date.localeCompare(b.date));
-  saveData();
-  LEAVE_DATE = null;
-  LEAVE_NOTE = '';
-  renderLeave();
-
-  // 残日数にどう反映されたかをその場で伝える
-  const r = simulate(emp, now);
-  const sf = r.shortfalls.find((s) => s.id === id) || (r.plannedShortfalls || []).find((s) => s.id === id);
-  if (date > ymd(now)) {
-    toast(sf ? `${md}に予定を記録しました（有給が${fmtD(sf.days)}日足りません）` : `${md}に${fmtD(days)}日を予定として記録しました`);
-  } else if (sf) {
-    toast(`${md}に記録しましたが、有給が${fmtD(sf.days)}日足りません`);
-  } else {
-    toast(`${md}に${fmtD(days)}日を記録しました（残り${fmtD(r.balance)}日）`);
-  }
-}
 
 /* ---- 記録の削除（元に戻せる） ---- */
 function deleteLeave(emp, id) {
@@ -1501,6 +951,11 @@ async function importText(text) {
     await askDialog({ title: '読み込めませんでした', message: 'JSONファイルとして読めませんでした。書き出したファイルを選んでください。', ok: '閉じる', cancel: false });
     return;
   }
+  if (IO.isEncrypted(d)) {
+    const plain = await askPasswordAndDecrypt(d);
+    if (plain == null) return;
+    return importText(plain);
+  }
   const chk = checkImport(d);
   if (chk.errors.length) {
     await askDialog({ title: '読み込めませんでした', message: chk.errors.slice(0, 5).join('\n'), ok: '閉じる', cancel: false });
@@ -1522,16 +977,18 @@ async function importText(text) {
 }
 function applyImport(d) {
   keepPrevious('読み込み');
+  const keepName = companyName();
   DATA = d;
-  DATA.employees.forEach(normalizeEmployee);
+  normalizeData(DATA);
+  if (!DATA.settings.companyName && keepName) DATA.settings.companyName = keepName;
   CUR = DATA.employees[0] ? DATA.employees[0].id : null;
-  saveData();
+  saveData('バックアップを読み込み');
   setTab(DATA.employees.length > 1 ? 'list' : 'home');
   toast(`${DATA.employees.length}人分を読み込みました`);
 }
 
 document.addEventListener('click', async (ev) => {
-  const btn = ev.target.closest('[data-act],[data-tab],[data-days],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear],[data-byear],[data-opendays]');
+  const btn = ev.target.closest('[data-act],[data-tab],[data-theme],[data-sort],[data-open],[data-lmode],[data-wyear],[data-byear],[data-opendays]');
   if (!btn) return;
 
   if (btn.dataset.tab) { setTab(btn.dataset.tab); return; }
@@ -1572,11 +1029,6 @@ document.addEventListener('click', async (ev) => {
     applyTheme(ui.theme); render(); return;
   }
 
-  if (btn.dataset.days) {
-    LEAVE_DAYS = btn.dataset.days === 'custom' ? (LEAVE_DAYS === 1 || LEAVE_DAYS === 0.5 ? 2 : LEAVE_DAYS) : Number(btn.dataset.days);
-    renderLeave(); return;
-  }
-
   const act = btn.dataset.act;
   const emp = currentEmp();
 
@@ -1605,7 +1057,8 @@ document.addEventListener('click', async (ev) => {
       input: { value: 21, min: 0, max: 31, step: 1, suffix: '日' }, ok: '入れる',
     });
     if (n == null) return;
-    for (let m = 1; m <= 12; m++) emp.workdays[`${y}-${pad2(m)}`] = Math.round(n);
+    const wmap = workMap(emp);
+    for (let m = 1; m <= 12; m++) wmap[`${y}-${pad2(m)}`] = Math.round(n);
     saveData(); renderWork(); toast(`${y}年を${Math.round(n)}日で埋めました`); return;
   }
 
@@ -1630,11 +1083,12 @@ document.addEventListener('click', async (ev) => {
   if (act === 'copyprev') {
     const y = WORK_YEAR, src = y - 1;
     let filled = 0;
+    const wmap = workMap(emp);
     for (let m = 1; m <= 12; m++) {
-      const from = emp.workdays[`${src}-${pad2(m)}`];
+      const from = wmap[`${src}-${pad2(m)}`];
       const to = `${y}-${pad2(m)}`;
-      if (typeof from === 'number' && typeof emp.workdays[to] !== 'number') {
-        emp.workdays[to] = from; filled++;
+      if (typeof from === 'number' && typeof wmap[to] !== 'number') {
+        wmap[to] = from; filled++;
       }
     }
     saveData(); renderWork();
@@ -1644,13 +1098,14 @@ document.addEventListener('click', async (ev) => {
 
   if (act === 'clearyear') {
     const y = WORK_YEAR;
-    const ok = await askDialog({ title: `${y}年の出勤日数を消しますか？`, message: `${y}年の12ヶ月分の入力をすべて消します。`, ok: '消す', danger: true });
+    const ok = await askDialog({ title: `${y}年の${WORK_MODE === 'sched' ? '所定労働日数' : '出勤日数'}を消しますか？`, message: `${y}年の12ヶ月分の入力をすべて消します。`, ok: '消す', danger: true });
     if (!ok) return;
     const before = {};
+    const wmap = workMap(emp);
     for (let m = 1; m <= 12; m++) {
       const k = `${y}-${pad2(m)}`;
-      if (typeof emp.workdays[k] === 'number') before[k] = emp.workdays[k];
-      delete emp.workdays[k];
+      if (typeof wmap[k] === 'number') before[k] = wmap[k];
+      delete wmap[k];
     }
     saveData(); renderWork();
     const empId = emp.id;
@@ -1659,7 +1114,8 @@ document.addEventListener('click', async (ev) => {
       onAction: () => {
         const e2 = DATA.employees.find((x) => x.id === empId);
         if (!e2) return;
-        Object.keys(before).forEach((k) => { if (typeof e2.workdays[k] !== 'number') e2.workdays[k] = before[k]; });
+        const w2 = WORK_MODE === 'sched' ? (e2.schedDays = isObj(e2.schedDays) ? e2.schedDays : {}) : e2.workdays;
+        Object.keys(before).forEach((k) => { if (typeof w2[k] !== 'number') w2[k] = before[k]; });
         saveData(); render(); toast('元に戻しました');
       },
     });
@@ -1671,9 +1127,10 @@ document.addEventListener('click', async (ev) => {
       id: uid(), name: `新しい従業員${DATA.employees.length + 1}`, empNo: '',
       hireDate: ymd(today()), weeklyDays: 5, workdays: {}, leaves: [], grantOverrides: {},
     };
-    DATA.employees.push(e); CUR = e.id; saveData();
+    DATA.employees.push(e); CUR = e.id; saveData('従業員を追加');
+    OPEN_EMP = e.id;
     setTab('set'); toast('氏名と入社日を入力してください');
-    const card = document.querySelector(`.emp-card[data-emp="${CSS.escape(e.id)}"]`);
+    const card = document.querySelector(`.emp-ed[data-emp="${CSS.escape(e.id)}"]`);
     if (card) card.scrollIntoView({ block: 'center' });
     return;
   }
@@ -1693,16 +1150,7 @@ document.addEventListener('click', async (ev) => {
     saveData(); render(); toast(`「${e.name}」を削除しました`); return;
   }
 
-  if (act === 'export') {
-    if (window.__PREVIEW__) { toast('書き出しはGitHub Pages版で使えます'); return; }
-    const blob = new Blob([JSON.stringify(DATA, null, 2)], { type: 'application/json' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `有給管理データ_${ymd(today())}.json`;
-    document.body.appendChild(a); a.click(); a.remove();
-    setTimeout(() => URL.revokeObjectURL(a.href), 3000);
-    toast('JSONを書き出しました'); return;
-  }
+  if (act === 'export') { await exportData(); return; }
 
   if (act === 'import') { $('#fileIn').click(); return; }
 
@@ -1717,12 +1165,12 @@ document.addEventListener('click', async (ev) => {
     if (!ok) return;
     const cur = DATA;
     DATA = p.data;
-    DATA.employees.forEach(normalizeEmployee);
+    normalizeData(DATA);
     try {
-      localStorage.setItem(KEY_PREV, JSON.stringify({ savedAt: new Date().toISOString(), reason: '戻す操作', data: cur }));
+      localStorage.setItem(keyPrev(), JSON.stringify({ savedAt: new Date().toISOString(), reason: '戻す操作', data: cur }));
     } catch (e) {}
     CUR = DATA.employees[0] ? DATA.employees[0].id : null;
-    saveData(); render(); toast('直前のデータに戻しました'); return;
+    saveData('直前のデータに戻す'); render(); toast('直前のデータに戻しました'); return;
   }
 
   if (act === 'update') {
@@ -1746,16 +1194,18 @@ document.addEventListener('click', async (ev) => {
 
   if (act === 'reset') {
     const ok = await askDialog({
-      title: 'この端末のデータを消去しますか？',
-      message: 'この端末に保存した全員分のデータを消します。\n消す直前のデータは控えとして1つ残ります（設定の「直前のデータに戻す」）。念のため先に「書き出し」でバックアップを取っておくと安心です。',
+      title: 'この会社のデータを消去しますか？',
+      message: `この端末に保存した「${companyName() || 'この会社'}」の全員分のデータを消します（会社の設定は残します）。\n消す直前のデータは控えとして1つ残ります（設定の「直前のデータに戻す」）。念のため先に「書き出し」でバックアップを取っておくと安心です。`,
       ok: '消去する', danger: true,
     });
     if (!ok) return;
     keepPrevious('消去');
-    try { localStorage.removeItem(KEY); } catch (e) {}
+    try { localStorage.removeItem(keyData()); } catch (e) {}
+    const keepSettings = DATA.settings;
     DATA = JSON.parse(JSON.stringify(DEFAULT_DATA));
+    if (keepSettings) DATA.settings = keepSettings;
     CUR = DATA.employees[0] ? DATA.employees[0].id : null;
-    saveData(); setTab('home'); toast('消去しました'); return;
+    saveData('データを消去'); setTab('list'); toast('消去しました'); return;
   }
 });
 
@@ -1779,7 +1229,8 @@ document.addEventListener('change', (ev) => {
   if (!emp) return;
 
   if (t.dataset.bulk) {
-    const n = numOrNull(t.value, 31);
+    const n0 = numOrNull(t.value, 31);
+    const n = n0 == null ? null : Math.round(n0 * 2) / 2;
     setBulk(emp, t.dataset.bulk, n == null ? 0 : n);
     t.value = n == null ? '' : fmtD(n);
     saveData(); refreshBulkTotals();
@@ -1792,6 +1243,16 @@ document.addEventListener('change', (ev) => {
     else emp.workdays[t.dataset.wd] = Math.round(n);
     t.value = n == null ? '' : String(Math.round(n));
     saveData(); refreshWorkTotals();
+    return;
+  }
+
+  if (t.dataset.sd) {
+    const n = numOrNull(t.value, 31);
+    if (!isObj(emp.schedDays)) emp.schedDays = {};
+    if (n == null) delete emp.schedDays[t.dataset.sd];
+    else emp.schedDays[t.dataset.sd] = Math.round(n);
+    t.value = n == null ? '' : String(Math.round(n));
+    saveData('所定労働日数を変更'); refreshWorkTotals();
     return;
   }
 
@@ -1814,12 +1275,25 @@ document.addEventListener('change', (ev) => {
       const n = Number(t.value);
       if (!(n >= 1 && n <= 5)) return;
       e.weeklyDays = n;
-    } else {
-      e[f] = String(t.value).slice(0, f === 'name' ? 40 : 20);
-    }
-    saveData();
+    } else if (f === 'hoursPerDay') {
+      const n = numOrNull(t.value, 24);
+      if (n == null || n < 1) { t.value = hpdOf(e); toast('1〜24時間で入れてください'); return; }
+      e.hoursPerDay = Math.ceil(n);
+      t.value = e.hoursPerDay;
+    } else if (f === 'over30h') {
+      e.over30h = t.checked;
+    } else if (f === 'basis') {
+      e.basis = t.value === 'contract' ? 'contract' : 'actual';
+      if (e.basis === 'contract' && !(Array.isArray(e.contracts) && e.contracts.length)) {
+        e.contracts = [{ id: uid(), from: e.hireDate, weekly: Number(e.weeklyDays) || 5, annual: null, hours30: e.over30h === true }];
+      }
+    } else if (STR_FIELDS[f]) {
+      e[f] = String(t.value).trim().slice(0, STR_FIELDS[f]);
+    } else return;
+    saveData(f === 'name' ? '氏名を変更' : '従業員の情報を変更');
     if (f === 'name') renderEmpSelect();
-    if (f === 'weeklyDays') renderSet();
+    if (f === 'weeklyDays' || f === 'basis' || f === 'over30h' || f === 'hoursPerDay') renderSet();
+    else if (typeof refreshEmpSummary === 'function') refreshEmpSummary(e);
     return;
   }
 });
@@ -1846,8 +1320,19 @@ document.addEventListener('input', (ev) => {
     return;
   }
 
-  if (t.dataset.bulk) {
+  if (t.dataset.sd) {
     const n = numOrNull(t.value, 31);
+    if (!isObj(emp.schedDays)) emp.schedDays = {};
+    if (n == null) delete emp.schedDays[t.dataset.sd];
+    else emp.schedDays[t.dataset.sd] = Math.round(n);
+    saveData('所定労働日数を変更');
+    refreshWorkTotals();
+    return;
+  }
+
+  if (t.dataset.bulk) {
+    const n0 = numOrNull(t.value, 31);
+    const n = n0 == null ? null : Math.round(n0 * 2) / 2;
     setBulk(emp, t.dataset.bulk, n == null ? 0 : n);
     saveData();
     refreshBulkTotals();
@@ -1895,20 +1380,20 @@ function isEditing(el) {
 document.addEventListener('focusout', (ev) => {
   const t = ev.target;
   let kind = numKeyOf(t);
-  if (!kind && t.dataset && t.dataset.dfi && t.dataset.dfi.startsWith('hire:')) kind = 'hire';
+  if (!kind && t.dataset && t.dataset.dfi && /^(hire|retire|ctf):/.test(t.dataset.dfi)) kind = 'hire';
   if (!kind) return;
   setTimeout(() => {
     if (isEditing(document.activeElement)) return;   // どこかに入力中
     if (document.querySelector('.dp-ov, .reg-ov, .dlg-ov')) return; // カレンダー等が開いている
-    if (kind === 'wd' && TAB === 'work') renderWork();
+    if ((kind === 'wd' || kind === 'sd') && TAB === 'work') renderWork();
     else if (kind === 'bulk' && TAB === 'leave') renderLeave();
     else if (kind === 'ov' && TAB === 'set') renderSet();
     else if (kind === 'hire' && TAB === 'set') {
-      // 入社日：変えたら付与の判定などを更新。打ちかけの不正な日付は元に戻す
+      // 入社日・退職日など：変えたら付与の判定などを更新。打ちかけの不正な日付は元に戻す
       const changed = HIRE_DIRTY;
       HIRE_DIRTY = false;
       renderSet();
-      if (changed) toast('入社日を更新しました');
+      if (changed) toast(t.dataset.dfi.startsWith('hire:') ? '入社日を更新しました' : t.dataset.dfi.startsWith('retire:') ? '退職日を更新しました' : '更新しました');
     }
   }, 150);
 });
@@ -1927,15 +1412,20 @@ document.addEventListener('wheel', (ev) => {
 /* =========================================================================
    起動
    ========================================================================= */
-(function init() {
+function init() {
   const ui = loadUI();
   applyTheme(ui.theme || 'auto');
-  if (ui.leaveMode === 'bulk' || ui.leaveMode === 'single') LEAVE_MODE = ui.leaveMode;
+  applyFontScale(ui.fontScale);
+  if (ui.leaveMode === 'bulk' || ui.leaveMode === 'single' || ui.leaveMode === 'range') LEAVE_MODE = ui.leaveMode;
+  initCompanies();
   DATA = loadData();
-  DATA.employees.forEach(normalizeEmployee);
-  CUR = DATA.employees[0] ? DATA.employees[0].id : null;
+  normalizeData(DATA);
+  primeAudit();
+  const first = DATA.employees.find((e) => !isRetired(e)) || DATA.employees[0];
+  CUR = first ? first.id : null;
   TAB = DATA.employees.length > 1 ? 'list' : 'home';
   setTab(TAB);
+  bootExtras();
 
   if ('serviceWorker' in navigator && !window.__PREVIEW__) {
     // 自動で読み込み直すことはしない（入力中に画面が消えるため）。
@@ -1965,4 +1455,6 @@ document.addEventListener('wheel', (ev) => {
         .catch(() => {});
     });
   }
-})();
+}
+document.addEventListener('DOMContentLoaded', init);
+
